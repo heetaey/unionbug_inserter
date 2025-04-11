@@ -62,9 +62,12 @@ def place_union_bug_on_page(page, click_coord, bug_pdf_path, bug_width_in, safe_
     if click_coord is not None:
         x, y = click_coord
         # Clamp the coordinates within the trimbox dimensions
+        x = x - target_width / 2
+        y = y - target_height / 2
+        # Clamp the centered rectangle within the trimbox
         x = max(trimbox.x0, min(x, trimbox.x1 - target_width))
-        y = max(trimbox.y0 + target_height, min(y, trimbox.y1))
-        rect = fitz.Rect(x, y - target_height, x + target_width, y)
+        y = max(trimbox.y0, min(y, trimbox.y1 - target_height))
+        rect = fitz.Rect(x, y, x + target_width, y + target_height)
     else:
         # Fallback positioning if no click coordinate was provided
         bleed_x = max(0, (page.rect.width - trimbox.width) / 2)

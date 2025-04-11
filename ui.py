@@ -289,8 +289,9 @@ class UnionBugApp:
         
         preview_img = ImageTk.PhotoImage(bug_img_resized)
         
-        x_canvas = x / self.scale_x + self.canvas_offset_x
-        y_canvas = (y / self.scale_y + self.canvas_offset_y) - display_height
+        x_canvas = x / self.scale_x + self.canvas_offset_x - display_width // 2
+        y_canvas = y / self.scale_y + self.canvas_offset_y - display_height // 2
+
         
         self.canvas.create_image(x_canvas, y_canvas, anchor="nw", image=preview_img)
         self.canvas.bug_preview = preview_img  # Prevent garbage collection
