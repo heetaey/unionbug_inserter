@@ -9,7 +9,7 @@ from pdf_handler import (
 from assets import get_bug_paths
 import os
 
-class UnionBugPlacerApp:
+class UnionBugInserter:
     def __init__(self, root):
         self.root = root
         self.root.title("Union Bug Placer")

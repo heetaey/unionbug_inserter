@@ -1,9 +1,8 @@
-
 from tkinter import Tk
-from ui import UnionBugPlacerApp
+from ui import UnionBugInserter
 
 if __name__ == "__main__":
     root = Tk()
-    app = UnionBugPlacerApp(root)
+    app = UnionBugInserter(root)
     root.geometry("1000x750")
     root.mainloop()
