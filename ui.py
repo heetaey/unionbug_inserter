@@ -1,445 +1,151 @@
-"""
-User Interface module for the Union Bug Placement App.
-Contains the UnionBugApp class which manages the GUI and user interactions.
-"""
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
+from pdf_handler import (
+    load_pdf, get_page_image, get_bug_image, save_pdf_with_bug,
+    get_brightness_from_image
+)
+from assets import get_bug_paths
 import os
-import subprocess
-import sys
-import fitz  # PyMuPDF
-import datetime
 
-from config import BUG_WIDTH_IN, SAFE_MARGIN_PT
-import pdf_handler
-import bug_placer
-
-class UnionBugApp:
-    """Main application GUI for placing a union bug on a PDF."""
+class UnionBugPlacerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Union Bug Placer")
-        self.root.geometry("1200x800")
-        self.root.minsize(1000, 700)
 
-        self.manual_x_in = tk.StringVar()
-        self.manual_y_in = tk.StringVar()
+        self.black_bug_path, self.white_bug_path = get_bug_paths()
 
-        self.pdf_path = ""
-        bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(__file__)))
-        self.black_bug = os.path.join(bundle_dir, "assets", "UnionBug - Small Black.pdf")
-        self.white_bug = os.path.join(bundle_dir, "assets", "UnionBug - Small White.pdf")
-        self.chosen_bug = self.black_bug
-        self.selected_page = 0
-        self.doc = None
-        self.trimbox = None
-        self.click_coords = {}
-        self.no_placement = set()
-        self.bug_width_in = BUG_WIDTH_IN
-        self.canvas_width = 600
-        self.canvas_height = 800
+        self.bug_size_inch = 0.3
+        self.bug_coords = None
+        self.bug_pdf = None
+        self.current_page_index = 0
+        self.pdf_doc = None
+        self.page_image = None
+        self.tk_img = None
+        self.pdf_pix = None
+        self.offset_x = 0
+        self.offset_y = 0
+        self.pdf_path = None
+        self.setup_ui()
 
-        self.build_ui()
+    def setup_ui(self):
+        toolbar = tk.Frame(self.root)
+        toolbar.pack(fill=tk.X)
 
-    def build_ui(self):
-        self.root.columnconfigure(1, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        tk.Button(toolbar, text="Open PDF", command=self.open_pdf).pack(side=tk.LEFT)
+        tk.Button(toolbar, text="Clear Bug", command=self.clear_bug).pack(side=tk.LEFT)
+        tk.Button(toolbar, text="Save PDF", command=self.save_pdf).pack(side=tk.LEFT)
 
-        sidebar = ttk.Frame(self.root)
-        sidebar.grid(row=0, column=0, sticky="ns", padx=10, pady=10)
+        tk.Label(toolbar, text="Bug Width (in):").pack(side=tk.LEFT)
+        self.bug_size_var = tk.DoubleVar(value=self.bug_size_inch)
+        tk.Entry(toolbar, textvariable=self.bug_size_var, width=5).pack(side=tk.LEFT)
 
-        canvas_frame = ttk.Frame(self.root)
-        canvas_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        canvas_frame.columnconfigure(0, weight=1)
-        canvas_frame.rowconfigure(0, weight=1)
+        tk.Label(toolbar, text="X (in):").pack(side=tk.LEFT)
+        self.x_var = tk.DoubleVar()
+        tk.Entry(toolbar, textvariable=self.x_var, width=6).pack(side=tk.LEFT)
 
-        self.canvas = tk.Canvas(canvas_frame, bg="gray")
+        tk.Label(toolbar, text="Y (in):").pack(side=tk.LEFT)
+        self.y_var = tk.DoubleVar()
+        tk.Entry(toolbar, textvariable=self.y_var, width=6).pack(side=tk.LEFT)
+
+        tk.Button(toolbar, text="◀", command=self.prev_page).pack(side=tk.LEFT)
+        self.page_label = tk.Label(toolbar, text="Page 1")
+        self.page_label.pack(side=tk.LEFT)
+        tk.Button(toolbar, text="▶", command=self.next_page).pack(side=tk.LEFT)
+
+        self.canvas_frame = tk.Frame(self.root)
+        self.canvas_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.canvas = tk.Canvas(self.canvas_frame, bg="gray")
         self.canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.scroll_y = tk.Scrollbar(self.canvas_frame, orient="vertical", command=self.canvas.yview)
+        self.scroll_x = tk.Scrollbar(self.canvas_frame, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=self.scroll_y.set, xscrollcommand=self.scroll_x.set)
+
+        self.scroll_y.grid(row=0, column=1, sticky="ns")
+        self.scroll_x.grid(row=1, column=0, sticky="ew")
+
+        self.canvas_frame.grid_rowconfigure(0, weight=1)
+        self.canvas_frame.grid_columnconfigure(0, weight=1)
+
         self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.root.bind("<Configure>", self.on_window_resize)
 
-        v_scroll = ttk.Scrollbar(canvas_frame, orient="vertical", command=self.canvas.yview)
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll = ttk.Scrollbar(canvas_frame, orient="horizontal", command=self.canvas.xview)
-        h_scroll.grid(row=1, column=0, sticky="ew")
-        self.canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-
-        file_frame = ttk.LabelFrame(sidebar, text="PDF File")
-        file_frame.pack(fill="x", pady=5)
-        self.pdf_entry = ttk.Entry(file_frame)
-        self.pdf_entry.pack(fill="x", pady=2)
-        ttk.Button(file_frame, text="Browse", command=self.select_pdf).pack(fill="x")
-
-        page_frame = ttk.LabelFrame(sidebar, text="Pages")
-        page_frame.pack(fill="x", pady=5)
-        self.page_listbox = tk.Listbox(page_frame, height=5, selectmode=tk.MULTIPLE, exportselection=False)
-        self.page_listbox.pack(fill="x", pady=2)
-        self.page_listbox.bind("<<ListboxSelect>>", self.on_checkbox_change)
-        self.page_listbox.bind("<<ListboxSelect>>", self.on_page_listbox_change)
-
-        nav_frame = ttk.Frame(page_frame)
-        nav_frame.pack()
-        ttk.Button(nav_frame, text="←", width=3, command=self.prev_page).pack(side="left")
-        self.page_selector = ttk.Combobox(nav_frame, state="readonly", width=10)
-        self.page_selector.pack(side="left", padx=5)
-        ttk.Button(nav_frame, text="→", width=3, command=self.next_page).pack(side="left")
-        self.trim_label = ttk.Label(page_frame, text="")
-        self.trim_label.pack()
-
-        coord_frame = ttk.LabelFrame(sidebar, text="Placement")
-        coord_frame.pack(fill="x", pady=5)
-        row = ttk.Frame(coord_frame)
-        row.pack()
-        ttk.Label(row, text="X:").pack(side="left")
-        ttk.Entry(row, width=6, textvariable=self.manual_x_in).pack(side="left", padx=5)
-        ttk.Label(row, text="Y:").pack(side="left")
-        ttk.Entry(row, width=6, textvariable=self.manual_y_in).pack(side="left", padx=5)
-        ttk.Button(coord_frame, text="Apply", command=self.apply_manual_coords).pack(fill="x", pady=2)
-        ttk.Button(coord_frame, text="Clear This Page", command=self.clear_current_page_placement).pack(fill="x")
-
-        width_frame = ttk.LabelFrame(sidebar, text="Bug Width")
-        width_frame.pack(fill="x", pady=5)
-        self.bug_width_entry = ttk.Entry(width_frame)
-        self.bug_width_entry.insert(0, str(self.bug_width_in))
-        self.bug_width_entry.pack(fill="x", pady=2)
-        ttk.Button(width_frame, text="Update", command=self.update_bug_width).pack(fill="x")
-
-        output_frame = ttk.LabelFrame(sidebar, text="Output")
-        output_frame.pack(fill="x", pady=5)
-        self.filename_entry = ttk.Entry(output_frame)
-        self.filename_entry.pack(fill="x", pady=2)
-        ttk.Button(output_frame, text="Choose Save Location", command=self.choose_output_path).pack(fill="x")
-        ttk.Button(output_frame, text="Save PDF", command=self.place_and_save).pack(fill="x", pady=(5, 2))
-        ttk.Button(output_frame, text="Clear Placement", command=self.clear_placement).pack(fill="x")
-
-        self.status_label = ttk.Label(sidebar, text="Load a PDF to begin.", wraplength=200)
-        self.status_label.pack(fill="x", pady=5)
-    
-    def on_checkbox_change(self, event=None):
-        """
-        Handle changes in the page selection listbox.
-        
-        Updates placement status and re-renders the preview.
-        """
-        self.no_placement.discard(self.selected_page)
-        self.update_page_selection()
-        self.render_preview()
-    
-    def update_bug_width(self):
-        """Update the union bug width based on user input."""
-        try:
-            value = float(self.bug_width_entry.get())
-            if value <= 0:
-                raise ValueError
-            self.bug_width_in = value
-            self.render_preview()
-        except ValueError:
-            messagebox.showerror("Invalid Input", "Bug width must be a positive number.")
-    
-    def select_pdf(self):
-        """Handle PDF file selection and load the PDF."""
-        file_path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if file_path:
-            self.load_pdf(file_path)
-    
-    def load_pdf(self, file_path):
-        """
-        Load the selected PDF and initialize related UI components.
-        
-        Parameters:
-            file_path (str): Path to the PDF file.
-        """
+    def open_pdf(self):
+        file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
+        if not file_path:
+            return
         self.pdf_path = file_path
-        self.doc = pdf_handler.load_pdf(file_path)
-        base = os.path.splitext(os.path.basename(file_path))[0]
-        output_path = os.path.join(os.path.dirname(file_path), f"{base}_bug.pdf")
-        self.filename_entry.delete(0, tk.END)
-        self.filename_entry.insert(0, output_path)
-        self.page_listbox.delete(0, tk.END)
-        for i in range(len(self.doc)):
-            self.page_listbox.insert(tk.END, f"Page {i + 1}")
-        self.page_listbox.select_set(0)
-        
-        self.page_selector['values'] = [f"Page {i + 1}" for i in range(len(self.doc))]
-        if not hasattr(self, "selected_page"):
-            self.page_selector.current(0)
-        self.page_selector.bind("<<ComboboxSelected>>", self.update_page_selection)
-        
-        self.update_page_selection()
-    
-    def update_page_selection(self, event=None):
-        """
-        Update the currently selected page and its preview details.
-        
-        Computes the trim box and re-renders the preview.
-        """
-        if self.selected_page in self.page_listbox.curselection():
-            self.no_placement.discard(self.selected_page)
-        
-        page = self.doc[self.selected_page]
-        self.trimbox = pdf_handler.get_trimbox(page)
-        # Display trim box dimensions in inches
-        tw = round(self.trimbox.width / 72, 2)
-        th = round(self.trimbox.height / 72, 2)
-        self.trim_label.config(text=f"Trim: {tw}\" x {th}\"")
-        self.render_preview()
-    
-    def render_preview(self):
-        """
-        Render the PDF page preview along with trim, bleed, and safe zone outlines.
-        
-        Also triggers rendering of the union bug preview if applicable.
-        """
-        page = self.doc[self.selected_page]
-        pix = page.get_pixmap(dpi=100)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        
-        rect = page.rect
-        is_landscape = rect.width > rect.height
-        if is_landscape:
-            img.thumbnail((self.canvas_width, self.canvas_height // 1.5), Image.Resampling.LANCZOS)
-        else:
-            img.thumbnail((self.canvas_width // 1.5, self.canvas_height), Image.Resampling.LANCZOS)
-        
-        img_w, img_h = img.size
-        self.canvas_offset_x = (self.canvas_width - img_w) // 2
-        self.canvas_offset_y = (self.canvas_height - img_h) // 2
-        self.scale_x = page.rect.width / img_w
-        self.scale_y = page.rect.height / img_h
-        
-        self.preview_img = ImageTk.PhotoImage(img)
+        self.pdf_doc = load_pdf(file_path)
+        self.current_page_index = 0
+        self.render_page()
+
+    def render_page(self):
         self.canvas.delete("all")
-        self.canvas.create_rectangle(0, 0, self.canvas_width, self.canvas_height, fill="gray")
-        
-        # Draw trim area (RED)
-        trim = self.trimbox
-        trim_x1 = int(trim.x0 * self.scale_x + self.canvas_offset_x)
-        trim_y1 = int(trim.y0 * self.scale_y + self.canvas_offset_y)
-        trim_x2 = int(trim.x1 * self.scale_x + self.canvas_offset_x)
-        trim_y2 = int(trim.y1 * self.scale_y + self.canvas_offset_y)
-        self.canvas.create_rectangle(trim_x1, trim_y1, trim_x2, trim_y2, outline="red")
-        
-        # Draw bleed area (ORANGE) - full page rect
-        bleed = page.rect
-        bleed_x1 = int(bleed.x0 * self.scale_x + self.canvas_offset_x)
-        bleed_y1 = int(bleed.y0 * self.scale_y + self.canvas_offset_y)
-        bleed_x2 = int(bleed.x1 * self.scale_x + self.canvas_offset_x)
-        bleed_y2 = int(bleed.y1 * self.scale_y + self.canvas_offset_y)
-        self.canvas.create_rectangle(bleed_x1, bleed_y1, bleed_x2, bleed_y2, outline="orange", dash=(4, 4))
-        
-        # Draw safe zone (GREEN), inset from trim box using SAFE_MARGIN_PT
-        safe_x1 = int((trim.x0 + SAFE_MARGIN_PT) * self.scale_x + self.canvas_offset_x)
-        safe_y1 = int((trim.y0 + SAFE_MARGIN_PT) * self.scale_y + self.canvas_offset_y)
-        safe_x2 = int((trim.x1 - SAFE_MARGIN_PT) * self.scale_x + self.canvas_offset_x)
-        safe_y2 = int((trim.y1 - SAFE_MARGIN_PT) * self.scale_y + self.canvas_offset_y)
-        self.canvas.create_rectangle(safe_x1, safe_y1, safe_x2, safe_y2, outline="green", dash=(2, 2))
-        
-        self.canvas.create_image(self.canvas_offset_x, self.canvas_offset_y, anchor="nw", image=self.preview_img)
-        
-        # Show bug preview if page is selected and placement is enabled
-        selected_indices = self.page_listbox.curselection()
-        if (self.selected_page in selected_indices and 
-            self.selected_page not in self.no_placement and 
-            (self.selected_page in self.click_coords or len(self.click_coords) > 0)):
-            self.render_bug_preview()
-        
-        self.sync_page_selector_to_preview()
-    
-    def render_bug_preview(self):
-        """
-        Render a preview of the union bug on the canvas based on click coordinates.
-        
-        Uses bug placer to select the appropriate bug and renders it at the calculated position.
-        """
-        if self.selected_page in self.no_placement:
-            return
-        
-        coords = self.click_coords.get(self.selected_page)
-        if coords:
-            x, y = coords
-        elif self.click_coords:
-            first_page = next(iter(self.click_coords))
-            x, y = self.click_coords[first_page]
-        else:
-            return  # No placement coordinate available
-        
-        # Choose bug based on contrast using the bug placer module
-        self.chosen_bug = bug_placer.choose_bug_by_contrast(self.doc[self.selected_page], x, y, self.white_bug, self.black_bug)
-        
-        bug_doc = fitz.open(self.chosen_bug)
-        bug_page = bug_doc[0]
-        bug_rect = bug_page.rect
-        
-        target_width_pt = self.bug_width_in * 72
-        scale = target_width_pt / bug_rect.width
-        
-        matrix = fitz.Matrix(scale, scale)
-        bug_pix = bug_page.get_pixmap(matrix=matrix, alpha=True)
-        bug_img = Image.frombytes("RGBA", [bug_pix.width, bug_pix.height], bug_pix.samples)
-        
-        display_width = int(bug_pix.width / self.scale_x)
-        display_height = int(bug_pix.height / self.scale_y)
-        bug_img_resized = bug_img.resize((display_width, display_height), Image.Resampling.LANCZOS)
-        
-        preview_img = ImageTk.PhotoImage(bug_img_resized)
-        
-        x_canvas = x / self.scale_x + self.canvas_offset_x - display_width // 2
-        y_canvas = y / self.scale_y + self.canvas_offset_y - display_height // 2
+        self.page_image, self.tk_img, self.pdf_pix, self.scale = get_page_image(
+            self.pdf_doc[self.current_page_index], self.canvas
+        )
+        canvas_center_x = self.canvas.winfo_width() / 2
+        canvas_center_y = self.canvas.winfo_height() / 2
+        self.img_id = self.canvas.create_image(canvas_center_x, canvas_center_y, anchor="center", image=self.tk_img)
+        self.canvas.config(scrollregion=self.canvas.bbox("all"))
 
-        
-        self.canvas.create_image(x_canvas, y_canvas, anchor="nw", image=preview_img)
-        self.canvas.bug_preview = preview_img  # Prevent garbage collection
-        
-        self.status_label.config(text=f"Placement: {round(x / 72, 2)}\" x {round(y / 72, 2)}\"")
-    
+        bbox = self.canvas.bbox(self.img_id)
+        self.offset_x = bbox[0]
+        self.offset_y = bbox[1]
+
+        self.page_label.config(text=f"Page {self.current_page_index + 1} of {len(self.pdf_doc)}")
+        if self.bug_coords:
+            self.place_bug_preview(*self.bug_coords)
+
     def on_canvas_click(self, event):
-        """
-        Handle click events on the canvas to record placement coordinates.
-        
-        Converts canvas coordinates to PDF points and stores them for the selected page.
-        """
-        x_pdf = (event.x - self.canvas_offset_x) * self.scale_x
-        y_pdf = (event.y - self.canvas_offset_y) * self.scale_y
-        self.click_coords[self.selected_page] = (x_pdf, y_pdf)
-        self.render_preview()
-    
-    def clear_placement(self):
-        """
-        Clear the current bug placement.
-        
-        Reloads the original PDF and clears any stored click coordinates.
-        """
-        try:
-            self.doc.close()
-            self.doc = pdf_handler.load_pdf(self.pdf_path)
-            self.click_coords = {}
-            self.status_label.config(text="Placement cleared. Source PDF reloaded.")
-            self.update_page_selection()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to reset: {str(e)}")
-    
-    def choose_output_path(self):
-        """Let the user choose the output PDF save location."""
-        file_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
-        if file_path:
-            self.filename_entry.delete(0, tk.END)
-            self.filename_entry.insert(0, file_path)
-    
-    def place_and_save(self):
-        """
-        Place the union bug on selected pages and save the modified PDF.
-        
-        Iterates over selected pages, uses the bug placer for placement, and saves the final PDF.
-        """
-        try:
-            selected_indices = self.page_listbox.curselection()
-            if not selected_indices:
-                messagebox.showerror("No Pages Selected", "Please select one or more pages.")
-                return
-            
-            for idx in selected_indices:
-                page_num = int(self.page_listbox.get(idx).split()[-1]) - 1
-                page = self.doc[page_num]
-                click_coord = self.click_coords.get(page_num, None)
-                bug_placer.place_union_bug_on_page(page, click_coord, self.chosen_bug, self.bug_width_in, SAFE_MARGIN_PT)
-            
-            output_path = self.filename_entry.get().strip()
-            if not output_path.lower().endswith(".pdf"):
-                output_path += ".pdf"
-            if os.path.abspath(output_path) == os.path.abspath(self.pdf_path):
-                messagebox.showerror("Save Error", "Can't overwrite original file.")
-                return
-            
-            pdf_handler.save_pdf(self.doc, output_path)
-            self.status_label.config(text=f"Saved to {output_path}")
-            messagebox.showinfo("Success", f"Saved to: {output_path}")
-            subprocess.run(["open", os.path.dirname(output_path)])
-        except Exception as e:
-            messagebox.showerror("Save Failed", str(e))
-    
-    def prev_page(self):
-        """Navigate to the previous page in the PDF preview."""
-        if self.selected_page > 0:
-            self.selected_page -= 1
-            self.page_selector.current(self.selected_page)
-            self.update_page_selection()
-    
-    def next_page(self):
-        """Navigate to the next page in the PDF preview."""
-        if self.selected_page < len(self.doc) - 1:
-            self.selected_page += 1
-            self.page_selector.current(self.selected_page)
-            self.update_page_selection()
-    
-    def on_page_listbox_change(self, event=None):
-        """
-        Handle changes in the page listbox selection.
-        
-        Updates the preview and active page based on user selection.
-        """
-        selected_indices = self.page_listbox.curselection()
-        if self.selected_page not in selected_indices:
-            self.render_preview()
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+        bbox = self.canvas.bbox(self.img_id)
+        if not bbox:
             return
-        
-        if selected_indices:
-            self.selected_page = selected_indices[0]
-            self.no_placement.discard(self.selected_page)
-            
-            if self.page_selector.get() != f"Page {self.selected_page + 1}":
-                self.page_selector.set(f"Page {self.selected_page + 1}")
-            
-            self.update_page_selection()
-            self.render_preview()
-    
-    def apply_manual_coords(self):
-        """Apply manual coordinate input for bug placement."""
-        try:
-            x_in = float(self.manual_x_in.get())
-            y_in = float(self.manual_y_in.get())
-            x_pt = x_in * 72
-            y_pt = y_in * 72
-            self.click_coords[self.selected_page] = (x_pt, y_pt)
-            self.render_preview()
-            self.status_label.config(text=f"Manual placement at {x_in}\" x {y_in}\"")
-        except ValueError:
-            messagebox.showerror("Invalid input", "Please enter valid numbers for X and Y.")
-    
-    def clear_current_page_placement(self):
-        """
-        Clear the bug placement for the current page.
-        
-        Warns if the current page is the fallback for other pages.
-        """
-        page = self.selected_page
-        if page in self.click_coords and len(self.click_coords) == 1:
-            messagebox.showinfo(
-                "Fallback Placement",
-                f"Page {page + 1} is currently the fallback for other pages.\n"
-                "You must place the bug somewhere else first before clearing this one."
-            )
+        img_left, img_top = bbox[0], bbox[1]
+        img_x = canvas_x - img_left
+        img_y = canvas_y - img_top
+        if not (0 <= img_x < self.tk_img.width() and 0 <= img_y < self.tk_img.height()):
             return
-        if page in self.click_coords:
-            del self.click_coords[page]
-            self.status_label.config(text=f"Placement cleared for Page {page + 1}")
-        else:
-            self.status_label.config(text=f"Fallback disabled for Page {page + 1}")
-        self.no_placement.add(page)
-        self.page_listbox.selection_clear(page)
-        self.render_preview()
-    
-    def sync_page_selector_to_preview(self):
-        """Ensure the page selector dropdown matches the current preview page."""
-        current_dropdown_text = self.page_selector.get()
-        correct_text = f"Page {self.selected_page + 1}"
-        if current_dropdown_text != correct_text:
-            self.page_selector.set(correct_text)
+        self.bug_coords = (img_x, img_y)
+        self.place_bug_preview(img_x, img_y)
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    style = ttk.Style()
-    style.theme_use("clam")
-    root.configure(bg="#2e2e2e" if datetime.datetime.now().hour >= 18 or datetime.datetime.now().hour < 6 else "#ffffff")
-    app = UnionBugApp(root)
-    root.mainloop()
+    def place_bug_preview(self, img_x, img_y):
+        brightness = get_brightness_from_image(self.page_image, int(img_x), int(img_y))
+        self.bug_pdf = self.white_bug_path if brightness < 128 else self.black_bug_path
+        try:
+            self.bug_imgtk = get_bug_image(self.bug_pdf, self.bug_size_var.get(), self.scale)
+            self.preview_bug_id = self.canvas.create_image(
+                img_x + self.offset_x, img_y + self.offset_y, anchor="nw", image=self.bug_imgtk
+            )
+        except Exception as e:
+            print(f"Error rendering bug preview: {e}")
+
+    def save_pdf(self):
+        save_pdf_with_bug(self)
+
+    def clear_bug(self):
+        if hasattr(self, 'preview_bug_id'):
+            self.canvas.delete(self.preview_bug_id)
+            self.bug_coords = None
+
+    def prev_page(self):
+        if self.current_page_index > 0:
+            self.current_page_index -= 1
+            self.bug_coords = None
+            self.render_page()
+
+    def next_page(self):
+        if self.pdf_doc and self.current_page_index < len(self.pdf_doc) - 1:
+            self.current_page_index += 1
+            self.bug_coords = None
+            self.render_page()
+
+    def on_window_resize(self, event):
+        if hasattr(self, "_resize_after_id"):
+            self.root.after_cancel(self._resize_after_id)
+        self._resize_after_id = self.root.after(300, self.render_page)
