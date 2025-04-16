@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import fitz  # PyMuPDF
+import datetime
 
 from config import BUG_WIDTH_IN, SAFE_MARGIN_PT
 import pdf_handler
@@ -17,109 +18,103 @@ import bug_placer
 
 class UnionBugApp:
     """Main application GUI for placing a union bug on a PDF."""
-    
     def __init__(self, root):
-        """
-        Initialize the main app window and set up UI components.
-        
-        Parameters:
-            root (tk.Tk): The main Tkinter window.
-        """
         self.root = root
         self.root.title("Union Bug Placer")
-        self.root.geometry("1400x900")
-        self.root.resizable(True, True)
-        
-        # Determine the bundle directory and asset paths
+        self.root.geometry("1200x800")
+        self.root.minsize(1000, 700)
+
+        self.manual_x_in = tk.StringVar()
+        self.manual_y_in = tk.StringVar()
+
+        self.pdf_path = ""
         bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(__file__)))
         self.black_bug = os.path.join(bundle_dir, "assets", "UnionBug - Small Black.pdf")
         self.white_bug = os.path.join(bundle_dir, "assets", "UnionBug - Small White.pdf")
-        
-        self.pdf_path = ""
         self.chosen_bug = self.black_bug
-        
         self.selected_page = 0
         self.doc = None
-        self.selected_pages = []
         self.trimbox = None
-        self.click_coords = {}  # Maps page index to (x, y) coordinates in points
-        self.canvas_offset_x = 0
-        self.canvas_offset_y = 0
-        self.scale_x = 1
-        self.scale_y = 1
-        
+        self.click_coords = {}
+        self.no_placement = set()
         self.bug_width_in = BUG_WIDTH_IN
-        
         self.canvas_width = 600
         self.canvas_height = 800
-        
-        self.manual_x_in = tk.StringVar()
-        self.manual_y_in = tk.StringVar()
-        
-        self.no_placement = set()
-        
-        # Build the GUI layout
+
         self.build_ui()
-    
+
     def build_ui(self):
-        """Construct the layout and widgets for the GUI."""
-        tk.Label(self.root, text="PDF File:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
-        self.pdf_entry = tk.Entry(self.root, width=60)
-        self.pdf_entry.grid(row=0, column=1, padx=5, pady=5)
-        tk.Button(self.root, text="Browse", command=self.select_pdf).grid(row=0, column=2)
-        
-        tk.Label(self.root, text="Pages:").grid(row=1, column=0, padx=5, pady=5, sticky="ne")
-        self.page_listbox = tk.Listbox(self.root, selectmode=tk.MULTIPLE, height=5, exportselection=False)
+        self.root.columnconfigure(1, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        sidebar = ttk.Frame(self.root)
+        sidebar.grid(row=0, column=0, sticky="ns", padx=10, pady=10)
+
+        canvas_frame = ttk.Frame(self.root)
+        canvas_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        canvas_frame.columnconfigure(0, weight=1)
+        canvas_frame.rowconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(canvas_frame, bg="gray")
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.canvas.bind("<Button-1>", self.on_canvas_click)
+
+        v_scroll = ttk.Scrollbar(canvas_frame, orient="vertical", command=self.canvas.yview)
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        h_scroll = ttk.Scrollbar(canvas_frame, orient="horizontal", command=self.canvas.xview)
+        h_scroll.grid(row=1, column=0, sticky="ew")
+        self.canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
+        file_frame = ttk.LabelFrame(sidebar, text="PDF File")
+        file_frame.pack(fill="x", pady=5)
+        self.pdf_entry = ttk.Entry(file_frame)
+        self.pdf_entry.pack(fill="x", pady=2)
+        ttk.Button(file_frame, text="Browse", command=self.select_pdf).pack(fill="x")
+
+        page_frame = ttk.LabelFrame(sidebar, text="Pages")
+        page_frame.pack(fill="x", pady=5)
+        self.page_listbox = tk.Listbox(page_frame, height=5, selectmode=tk.MULTIPLE, exportselection=False)
+        self.page_listbox.pack(fill="x", pady=2)
         self.page_listbox.bind("<<ListboxSelect>>", self.on_checkbox_change)
         self.page_listbox.bind("<<ListboxSelect>>", self.on_page_listbox_change)
-        self.page_listbox.grid(row=1, column=1, padx=5, pady=5, sticky="w")
-        
-        # Single-page preview controls
-        preview_frame = tk.Frame(self.root)
-        preview_frame.grid(row=1, column=1, padx=5, pady=5, sticky="e")
-        tk.Button(preview_frame, text="←", width=3, command=self.prev_page).pack(side="left")
-        self.page_selector = ttk.Combobox(preview_frame, state="readonly", width=10)
+
+        nav_frame = ttk.Frame(page_frame)
+        nav_frame.pack()
+        ttk.Button(nav_frame, text="←", width=3, command=self.prev_page).pack(side="left")
+        self.page_selector = ttk.Combobox(nav_frame, state="readonly", width=10)
         self.page_selector.pack(side="left", padx=5)
-        tk.Button(preview_frame, text="→", width=3, command=self.next_page).pack(side="left")
-        
-        self.trim_label = tk.Label(self.root, text="")
-        self.trim_label.grid(row=1, column=2, padx=5)
-        
-        tk.Button(self.root, text="Choose Save Location", command=self.choose_output_path).grid(row=2, column=0, sticky="e")
-        self.filename_entry = tk.Entry(self.root, width=60)
-        self.filename_entry.grid(row=2, column=1, padx=5, pady=5)
-        
-        self.canvas = tk.Canvas(self.root, width=self.canvas_width, height=self.canvas_height, bg="gray")
-        self.root.grid_rowconfigure(3, weight=1)
-        self.root.grid_columnconfigure(0, weight=1)
-        self.root.grid_columnconfigure(1, weight=1)
-        self.root.grid_columnconfigure(2, weight=1)
-        self.canvas.grid(row=3, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
-        self.canvas.bind("<Button-1>", self.on_canvas_click)
-        
-        # Coordinates input frame
-        coord_frame = tk.Frame(self.root)
-        coord_frame.grid(row=7, column=0, columnspan=3, pady=5)
-        tk.Label(coord_frame, text="X (in):").pack(side="left")
-        tk.Entry(coord_frame, width=6, textvariable=self.manual_x_in).pack(side="left", padx=(0, 10))
-        tk.Label(coord_frame, text="Y (in):").pack(side="left")
-        tk.Entry(coord_frame, width=6, textvariable=self.manual_y_in).pack(side="left", padx=(0, 10))
-        tk.Button(coord_frame, text="Apply Coordinates", command=self.apply_manual_coords).pack(side="left")
-        tk.Button(coord_frame, text="Clear This Page", command=self.clear_current_page_placement).pack(side="left", padx=(10, 0))
-        
-        tk.Label(self.root, text="Bug Width (inches):").grid(row=6, column=0, padx=5, pady=5, sticky="e")
-        self.bug_width_entry = tk.Entry(self.root, width=10)
+        ttk.Button(nav_frame, text="→", width=3, command=self.next_page).pack(side="left")
+        self.trim_label = ttk.Label(page_frame, text="")
+        self.trim_label.pack()
+
+        coord_frame = ttk.LabelFrame(sidebar, text="Placement")
+        coord_frame.pack(fill="x", pady=5)
+        row = ttk.Frame(coord_frame)
+        row.pack()
+        ttk.Label(row, text="X:").pack(side="left")
+        ttk.Entry(row, width=6, textvariable=self.manual_x_in).pack(side="left", padx=5)
+        ttk.Label(row, text="Y:").pack(side="left")
+        ttk.Entry(row, width=6, textvariable=self.manual_y_in).pack(side="left", padx=5)
+        ttk.Button(coord_frame, text="Apply", command=self.apply_manual_coords).pack(fill="x", pady=2)
+        ttk.Button(coord_frame, text="Clear This Page", command=self.clear_current_page_placement).pack(fill="x")
+
+        width_frame = ttk.LabelFrame(sidebar, text="Bug Width")
+        width_frame.pack(fill="x", pady=5)
+        self.bug_width_entry = ttk.Entry(width_frame)
         self.bug_width_entry.insert(0, str(self.bug_width_in))
-        self.bug_width_entry.grid(row=6, column=1, sticky="w")
-        tk.Button(self.root, text="Update Size", command=self.update_bug_width).grid(row=6, column=2, padx=5, pady=5)
-        
-        self.status_label = tk.Label(self.root, text="Load a PDF to begin.", fg="gray")
-        self.status_label.grid(row=4, column=0, columnspan=3)
-        
-        button_frame = tk.Frame(self.root)
-        button_frame.grid(row=5, column=0, columnspan=3)
-        tk.Button(button_frame, text="Place Union Bug & Save PDF", command=self.place_and_save).pack(side="left", padx=10)
-        tk.Button(button_frame, text="Clear Placement", command=self.clear_placement).pack(side="left")
+        self.bug_width_entry.pack(fill="x", pady=2)
+        ttk.Button(width_frame, text="Update", command=self.update_bug_width).pack(fill="x")
+
+        output_frame = ttk.LabelFrame(sidebar, text="Output")
+        output_frame.pack(fill="x", pady=5)
+        self.filename_entry = ttk.Entry(output_frame)
+        self.filename_entry.pack(fill="x", pady=2)
+        ttk.Button(output_frame, text="Choose Save Location", command=self.choose_output_path).pack(fill="x")
+        ttk.Button(output_frame, text="Save PDF", command=self.place_and_save).pack(fill="x", pady=(5, 2))
+        ttk.Button(output_frame, text="Clear Placement", command=self.clear_placement).pack(fill="x")
+
+        self.status_label = ttk.Label(sidebar, text="Load a PDF to begin.", wraplength=200)
+        self.status_label.pack(fill="x", pady=5)
     
     def on_checkbox_change(self, event=None):
         """
@@ -443,5 +438,8 @@ class UnionBugApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
+    style = ttk.Style()
+    style.theme_use("clam")
+    root.configure(bg="#2e2e2e" if datetime.datetime.now().hour >= 18 or datetime.datetime.now().hour < 6 else "#ffffff")
     app = UnionBugApp(root)
     root.mainloop()
