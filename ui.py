@@ -37,9 +37,15 @@ class UnionBugInserter:
         tk.Button(toolbar, text="Clear Bug", command=self.clear_bug).pack(side=tk.LEFT)
         tk.Button(toolbar, text="Save PDF", command=self.save_pdf).pack(side=tk.LEFT)
 
+        # tk.Label(toolbar, text="Bug Width (in):").pack(side=tk.LEFT)
+        # self.bug_size_var = tk.DoubleVar(value=self.bug_size_inch)
+        # tk.Entry(toolbar, textvariable=self.bug_size_var, width=5).pack(side=tk.LEFT)
         tk.Label(toolbar, text="Bug Width (in):").pack(side=tk.LEFT)
         self.bug_size_var = tk.DoubleVar(value=self.bug_size_inch)
-        tk.Entry(toolbar, textvariable=self.bug_size_var, width=5).pack(side=tk.LEFT)
+        
+        self.bug_slider = tk.Scale(toolbar, variable=self.bug_size_var, from_=0.1, to=2.0, resolution=0.05,
+                           orient=tk.HORIZONTAL, length=150, command=self.update_bug_size)
+        self.bug_slider.pack(side=tk.LEFT)
 
         tk.Label(toolbar, text="X (in):").pack(side=tk.LEFT)
         self.x_var = tk.DoubleVar()
@@ -132,6 +138,19 @@ class UnionBugInserter:
         if hasattr(self, 'preview_bug_id'):
             self.canvas.delete(self.preview_bug_id)
             self.bug_coords = None
+
+    def update_bug_size(self, value=None):
+        if self.bug_coords is None:
+            return
+
+        # Fully remove and replace the bug
+        if hasattr(self, 'preview_bug_id'):
+            self.canvas.delete(self.preview_bug_id)
+            del self.preview_bug_id
+
+        # Re-render bug at last coordinates with new size
+        img_x, img_y = self.bug_coords
+        self.place_bug_preview(img_x, img_y)
 
     def prev_page(self):
         if self.current_page_index > 0:
