@@ -191,22 +191,50 @@ class UnionBugInserter:
     def on_canvas_click(self, event):
         if not self.pdf_doc: return
         
+        # 1. Get raw click coordinates (PDF Points)
         cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         
         if not (self.offset_x <= cx <= self.offset_x + self.page_width_px) or \
            not (self.offset_y <= cy <= self.offset_y + self.page_height_px):
             return
 
-        x_pt = (cx - self.offset_x) / self.display_scale
-        y_pt = (cy - self.offset_y) / self.display_scale
+        click_x_pt = (cx - self.offset_x) / self.display_scale
+        click_y_pt = (cy - self.offset_y) / self.display_scale
         
+        # 2. Get the target data
         target = self.overlays[self.current_target_key]
+        
+        # 3. Calculate Centering Offset
+        # We need to know the dimensions of the overlay to center it.
+        # Use default asset (bug_black or indicia) to calculate dimensions.
+        asset_key = target["asset_key"]
+        if self.current_target_key == "bug": 
+            asset_key = "bug_black" # Use black as reference for size
+
+        asset_doc = self.assets.get(asset_key)
+        
+        if asset_doc:
+            page = asset_doc[0]
+            # Calculate width/height in points based on user selected inch size
+            width_pt = target["size"].get() * 72
+            aspect_ratio = page.rect.height / page.rect.width
+            height_pt = width_pt * aspect_ratio
+            
+            # Shift coordinate by half width/height
+            final_x = click_x_pt - (width_pt / 2)
+            final_y = click_y_pt - (height_pt / 2)
+        else:
+            # Fallback (shouldn't happen if assets loaded)
+            final_x = click_x_pt
+            final_y = click_y_pt
+        
+        # 4. Update State
         target["active"].set(True)
-        target["coords"] = (x_pt, y_pt)
+        target["coords"] = (final_x, final_y)
         target["page_index"] = self.current_page_index
         
-        self.ui_x.set(round(x_pt/72, 3))
-        self.ui_y.set(round(y_pt/72, 3))
+        self.ui_x.set(round(final_x/72, 3))
+        self.ui_y.set(round(final_y/72, 3))
         self.refresh_previews()
 
     def refresh_previews(self):
@@ -259,7 +287,7 @@ class UnionBugInserter:
             self.pdf_doc = load_pdf(f)
             self.current_page_index = 0
             
-            # --- RESTORED DIMENSION INFO ---
+            # --- INFO DISPLAY ---
             page = self.pdf_doc[0]
             w_in = page.rect.width / 72
             h_in = page.rect.height / 72
