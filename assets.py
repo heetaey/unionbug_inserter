@@ -12,5 +12,5 @@ def get_bug_paths():
     return get_asset_path("UnionBug - Small Black.pdf"), get_asset_path("UnionBug - Small White.pdf")
 
 def get_indicia_paths():
-    # Returns EXACTLY 2 values
-    return get_asset_path("indicia.pdf")
+    # Return a tuple with one item, just to be safe/consistent
+    return (get_asset_path("indicia.pdf"), )

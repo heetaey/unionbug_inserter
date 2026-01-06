@@ -5,7 +5,7 @@ import os
 import sys
 import subprocess
 
-def load_pdf(file_path):
+def load_pdf(file_path): 
     return fitz.open(file_path)
 
 def get_page_image(page, canvas):
@@ -14,7 +14,6 @@ def get_page_image(page, canvas):
     max_h = canvas.winfo_height()
     margin_x = max(max_w * 0.05, 50)
     margin_y = max(max_h * 0.05, 50)
-
     scale = min((max_w - 2 * margin_x) / page.rect.width, (max_h - 2 * margin_y) / page.rect.height, 2.0)
     mat = fitz.Matrix(scale, scale)
     pix = page.get_pixmap(matrix=mat, alpha=False)
@@ -35,51 +34,54 @@ def get_brightness_from_image(image, x, y):
     r, g, b = image.getpixel((x, y))
     return int(0.299 * r + 0.587 * g + 0.114 * b)
 
-def save_pdf_with_bug(app):
-    if not app.bug_coords_pt or not app.bug_pdf:
-        messagebox.showwarning("No Bug", "No bug has been placed.")
+# === NEW SAVE FUNCTION ===
+def save_pdf_with_overlays(app):
+    # Check if ANY overlay is active
+    active_items = [k for k, v in app.overlays.items() if v["active"].get() and v["coords"]]
+    
+    if not active_items:
+        messagebox.showwarning("No Overlays", "No elements (Bug or Indicia) are active and placed.")
         return
 
     original_basename = os.path.splitext(os.path.basename(app.pdf_path))[0]
-    suggested_name = f"{original_basename}_bug.pdf"
-    initial_dir = os.path.dirname(app.pdf_path)
-
     save_path = filedialog.asksaveasfilename(
-        initialdir=initial_dir,
-        initialfile=suggested_name,
+        initialfile=f"{original_basename}_processed.pdf",
         defaultextension=".pdf",
         filetypes=[("PDF files", "*.pdf")]
     )
-    if not save_path:
-        return
+    if not save_path: return
 
     doc = fitz.open(app.pdf_path)
     page = doc[app.current_page_index]
 
-    # Get bug coordinates (these are already in PDF points - zoom-independent)
-    x_pt, y_pt = app.bug_coords_pt
+    # Iterate through all overlays in the dictionary
+    for key, item in app.overlays.items():
+        # Only process if Checkbox is Checked AND Coords exist
+        if item["active"].get() and item["coords"]:
+            x_pt, y_pt = item["coords"]
+            
+            # Load the specific PDF asset for this item
+            overlay_doc = fitz.open(item["pdf_asset"])
+            overlay_page = overlay_doc[0]
+            
+            # Calculate Scale
+            target_width_pt = item["size"].get() * 72
+            scale_factor = target_width_pt / overlay_page.rect.width
+            
+            # Create Rect
+            rect = fitz.Rect(
+                x_pt,
+                y_pt,
+                x_pt + overlay_page.rect.width * scale_factor,
+                y_pt + overlay_page.rect.height * scale_factor
+            )
+            
+            # Insert
+            page.show_pdf_page(rect, overlay_doc, 0)
 
-    # Load bug PDF and calculate its size in points
-    bug_doc = fitz.open(app.bug_pdf)
-    bug_page = bug_doc[0]
-    bug_width_pt = app.bug_size_var.get() * 72
-    scale_factor = bug_width_pt / bug_page.rect.width
-
-    # Create the bug rectangle at the correct position
-    bug_rect = fitz.Rect(
-        x_pt,
-        y_pt,
-        x_pt + bug_page.rect.width * scale_factor,
-        y_pt + bug_page.rect.height * scale_factor
-    )
-
-    page.show_pdf_page(bug_rect, bug_doc, 0)
     doc.save(save_path)
-    messagebox.showinfo("Saved", f"PDF saved: {save_path}")
-
-    if sys.platform == "darwin":
-        subprocess.call(["open", "-R", save_path])
-    elif sys.platform == "win32":
-        os.startfile(os.path.normpath(save_path))
-    elif sys.platform.startswith("linux"):
-        subprocess.call(["xdg-open", os.path.dirname(save_path)])
+    messagebox.showinfo("Saved", f"PDF saved successfully.")
+    
+    # Open file (Platform specific)
+    if sys.platform == "darwin": subprocess.call(["open", "-R", save_path])
+    elif sys.platform == "win32": os.startfile(os.path.normpath(save_path))
