@@ -1,4 +1,3 @@
-
 import fitz
 from PIL import Image, ImageTk
 from tkinter import filedialog, messagebox
@@ -37,7 +36,7 @@ def get_brightness_from_image(image, x, y):
     return int(0.299 * r + 0.587 * g + 0.114 * b)
 
 def save_pdf_with_bug(app):
-    if not app.bug_coords or not app.bug_pdf:
+    if not app.bug_coords_pt or not app.bug_pdf:
         messagebox.showwarning("No Bug", "No bug has been placed.")
         return
 
@@ -56,25 +55,17 @@ def save_pdf_with_bug(app):
 
     doc = fitz.open(app.pdf_path)
     page = doc[app.current_page_index]
-    true_w, true_h = page.rect.width, page.rect.height
-    render_w, render_h = app.pdf_pix.width, app.pdf_pix.height
 
-    bbox = app.canvas.bbox(app.img_id)
-    img_left, img_top = bbox[0], bbox[1]
-    img_x = app.bug_coords[0]
-    img_y = app.bug_coords[1]
+    # Get bug coordinates (these are already in PDF points - zoom-independent)
+    x_pt, y_pt = app.bug_coords_pt
 
-    canvas_bug_x = img_x + app.offset_x - img_left
-    canvas_bug_y = img_y + app.offset_y - img_top
-
-    x_pt = canvas_bug_x * (page.rect.width / render_w)
-    y_pt = canvas_bug_y * (page.rect.height / render_h)
-
+    # Load bug PDF and calculate its size in points
     bug_doc = fitz.open(app.bug_pdf)
     bug_page = bug_doc[0]
     bug_width_pt = app.bug_size_var.get() * 72
     scale_factor = bug_width_pt / bug_page.rect.width
 
+    # Create the bug rectangle at the correct position
     bug_rect = fitz.Rect(
         x_pt,
         y_pt,
