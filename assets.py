@@ -2,15 +2,14 @@ import os
 import sys
 
 def get_asset_path(filename):
-    # Handles looking for files whether running as script or .exe (PyInstaller)
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, 'assets', filename)
-    return os.path.join(os.path.dirname(__file__), 'assets', filename)
+    """Returns the absolute path to an asset, handling Dev vs PyInstaller modes."""
+    base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, 'assets', filename)
 
 def get_bug_paths():
-    # Returns EXACTLY 2 values
+    """Returns paths for Black and White versions of the Union Bug."""
     return get_asset_path("UnionBug - Small Black.pdf"), get_asset_path("UnionBug - Small White.pdf")
 
 def get_indicia_paths():
-    # Return a tuple with one item, just to be safe/consistent
-    return (get_asset_path("indicia.pdf"), )
+    """Returns path for Indicia. Always returns a string for consistency."""
+    return get_asset_path("indicia.pdf")

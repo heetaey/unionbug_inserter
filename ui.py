@@ -1,13 +1,16 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 import customtkinter as ctk
 from PIL import Image, ImageTk
+import fitz
+import os
+
+# Import our optimized handler
 from pdf_handler import (
-    load_pdf, get_page_image, get_bug_image, save_pdf_with_overlays,
-    get_brightness_from_image
+    load_pdf, get_page_image, render_preview_image, 
+    save_pdf_with_overlays, get_brightness_at_loc
 )
 from assets import get_bug_paths, get_indicia_paths
-import os
 
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
@@ -16,60 +19,66 @@ class UnionBugInserter:
     def __init__(self, root):
         self.root = root
         self.root.title("Union Bug & Indicia Placer")
-        
+        self.root.geometry("1100x800")
+
         self.root.grid_columnconfigure(0, weight=1)
         self.root.grid_columnconfigure(1, weight=0)
         self.root.grid_rowconfigure(0, weight=1)
 
-        # Load Assets
-        self.bug_black, self.bug_white = get_bug_paths()
+        # --- ASSET LOADING ---
+        bug_blk_path, bug_wht_path = get_bug_paths()
+        indicia_path = get_indicia_paths()
         
-        # Handle tuple vs string return from assets
-        indicia_asset = get_indicia_paths()
-        self.indicia_pdf = indicia_asset[0] if isinstance(indicia_asset, tuple) else indicia_asset
+        try:
+            self.assets = {
+                "bug_black": fitz.open(bug_blk_path),
+                "bug_white": fitz.open(bug_wht_path),
+                "indicia": fitz.open(indicia_path)
+            }
+        except Exception as e:
+            print(f"Error loading assets: {e}")
+            self.assets = {}
 
-        # --- STATE MANAGEMENT ---
+        # --- APP STATE ---
         self.overlays = {
             "bug": {
-                "name": "Union Bug",
                 "active": tk.BooleanVar(value=False),
-                "coords": None,
+                "coords": None,        
+                "page_index": None,
                 "size": tk.DoubleVar(value=0.3),
-                "pdf_asset": self.bug_black, 
+                "asset_key": "bug_black",
                 "preview_id": None
             },
             "indicia": {
-                "name": "Indicia",
                 "active": tk.BooleanVar(value=False),
                 "coords": None,
+                "page_index": None,
                 "size": tk.DoubleVar(value=1.0),
-                "pdf_asset": self.indicia_pdf,
+                "asset_key": "indicia",
                 "preview_id": None
             }
         }
         
-        self.current_target = tk.StringVar(value="bug") 
-
-        # Global App State
+        self.current_target_key = "bug"
         self.pdf_doc = None
         self.pdf_path = None
-        self.page_image = None
-        self.tk_img = None
         self.current_page_index = 0
         self.zoom_level = 1.0
         self.display_scale = 1.0
         self.offset_x = 0
         self.offset_y = 0
-        
-        # Temporary vars for UI inputs
-        self.ui_size_var = tk.DoubleVar(value=0.3)
-        self.ui_x_var = tk.DoubleVar(value=0.0)
-        self.ui_y_var = tk.DoubleVar(value=0.0)
+        self.page_image = None
+        self.page_width_px = 0
+        self.page_height_px = 0
+
+        self.ui_size = tk.DoubleVar(value=0.3)
+        self.ui_x = tk.DoubleVar(value=0.0)
+        self.ui_y = tk.DoubleVar(value=0.0)
 
         self.setup_ui()
 
     def setup_ui(self):
-        # ================= MAIN CANVAS =================
+        # 1. Canvas Area
         self.canvas_frame = ctk.CTkFrame(self.root, corner_radius=0)
         self.canvas_frame.grid(row=0, column=0, sticky="nsew")
         self.canvas_frame.grid_rowconfigure(0, weight=1)
@@ -78,209 +87,185 @@ class UnionBugInserter:
         self.canvas = tk.Canvas(self.canvas_frame, bg="#2b2b2b", highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
-        self.scroll_y = ctk.CTkScrollbar(self.canvas_frame, orientation="vertical", command=self.canvas.yview)
-        self.scroll_x = ctk.CTkScrollbar(self.canvas_frame, orientation="horizontal", command=self.canvas.xview)
-        self.canvas.configure(yscrollcommand=self.scroll_y.set, xscrollcommand=self.scroll_x.set)
-        
-        self.scroll_y.grid(row=0, column=1, sticky="ns")
-        self.scroll_x.grid(row=1, column=0, sticky="ew")
+        sb_y = ctk.CTkScrollbar(self.canvas_frame, command=self.canvas.yview)
+        sb_x = ctk.CTkScrollbar(self.canvas_frame, orientation="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=sb_y.set, xscrollcommand=sb_x.set)
+        sb_y.grid(row=0, column=1, sticky="ns")
+        sb_x.grid(row=1, column=0, sticky="ew")
 
         # Events
         self.canvas.bind("<Button-1>", self.on_canvas_click)
-        self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
-        self.canvas.bind("<Button-4>", self.on_mouse_wheel)
-        self.canvas.bind("<Button-5>", self.on_mouse_wheel)
+        self.canvas.bind("<MouseWheel>", self.on_mouse_wheel) 
+        self.canvas.bind("<Button-4>", self.on_mouse_wheel)   
+        self.canvas.bind("<Button-5>", self.on_mouse_wheel)   
         self.root.bind("<Configure>", self.on_window_resize)
 
-        # ================= SIDEBAR =================
+        # 2. Sidebar
         self.sidebar = ctk.CTkFrame(self.root, width=250, corner_radius=0)
         self.sidebar.grid(row=0, column=1, sticky="nsew")
         
-        # --- 1. Actions ---
-        ctk.CTkLabel(self.sidebar, text="ACTIONS", font=ctk.CTkFont(size=14, weight="bold")).pack(padx=20, pady=(20, 10), anchor="w")
+        # Actions
+        self._add_header("ACTIONS")
         ctk.CTkButton(self.sidebar, text="Open PDF", command=self.open_pdf).pack(padx=20, pady=5, fill="x")
         ctk.CTkButton(self.sidebar, text="Save PDF", command=self.save_pdf, fg_color="green").pack(padx=20, pady=5, fill="x")
+        ctk.CTkButton(self.sidebar, text="Clean PDF / Reset", command=self.clear_all, fg_color="red").pack(padx=20, pady=5, fill="x")
         
-        # --- 2. Toggles ---
-        ctk.CTkLabel(self.sidebar, text="ENABLE ELEMENTS", font=ctk.CTkFont(size=14, weight="bold")).pack(padx=20, pady=(20, 10), anchor="w")
-        
-        self.chk_bug = ctk.CTkCheckBox(
-            self.sidebar, text="Union Bug", variable=self.overlays["bug"]["active"], command=self.refresh_previews
-        )
-        self.chk_bug.pack(padx=20, pady=5, anchor="w")
+        # Toggles
+        self._add_header("ENABLE ELEMENTS")
+        ctk.CTkCheckBox(self.sidebar, text="Union Bug", variable=self.overlays["bug"]["active"], 
+                        command=self.refresh_previews).pack(padx=20, pady=5, anchor="w")
+        ctk.CTkCheckBox(self.sidebar, text="Indicia / Postage", variable=self.overlays["indicia"]["active"], 
+                        command=self.refresh_previews).pack(padx=20, pady=5, anchor="w")
 
-        self.chk_indicia = ctk.CTkCheckBox(
-            self.sidebar, text="Indicia / Postage", variable=self.overlays["indicia"]["active"], command=self.refresh_previews
-        )
-        self.chk_indicia.pack(padx=20, pady=5, anchor="w")
-
-        # --- 3. Edit Controls ---
-        ctk.CTkLabel(self.sidebar, text="EDIT CONTROLS", font=ctk.CTkFont(size=14, weight="bold")).pack(padx=20, pady=(20, 10), anchor="w")
-        
-        self.target_selector = ctk.CTkSegmentedButton(
-            self.sidebar, values=["Union Bug", "Indicia"], variable=tk.StringVar(value="Union Bug"), command=self.on_target_switch
-        )
+        # Edit Controls
+        self._add_header("EDIT CONTROLS")
+        self.target_selector = ctk.CTkSegmentedButton(self.sidebar, values=["Union Bug", "Indicia"], 
+                                                     command=self.on_target_switch)
+        self.target_selector.set("Union Bug")
         self.target_selector.pack(padx=20, pady=5, fill="x")
         
-        # Size
         ctk.CTkLabel(self.sidebar, text="Size (inches):").pack(padx=20, pady=(5, 0), anchor="w")
-        self.size_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.size_frame.pack(padx=20, pady=5, fill="x")
+        frame_size = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        frame_size.pack(padx=20, pady=5, fill="x")
+        
+        ctk.CTkSlider(frame_size, from_=0.1, to=2.0, variable=self.ui_size, 
+                      command=self.on_ui_change).pack(side="left", fill="x", expand=True, padx=(0, 10))
+        entry_size = ctk.CTkEntry(frame_size, textvariable=self.ui_size, width=60)
+        entry_size.pack(side="right")
+        entry_size.bind("<Return>", lambda e: self.on_ui_change(None))
 
-        self.slider_size = ctk.CTkSlider(
-            self.size_frame, from_=0.1, to=2.0, number_of_steps=190,
-            variable=self.ui_size_var, command=self.on_ui_size_change
-        )
-        self.slider_size.pack(side="left", fill="x", expand=True, padx=(0, 10))
-
-        self.ent_size = ctk.CTkEntry(self.size_frame, textvariable=self.ui_size_var, width=60)
-        self.ent_size.pack(side="right")
-        self.ent_size.bind("<Return>", lambda e: self.on_ui_size_change(None))
-
-        # Position
         ctk.CTkLabel(self.sidebar, text="Position (X / Y inches):").pack(padx=20, pady=(5, 0), anchor="w")
-        self.pos_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.pos_frame.pack(padx=20, pady=5, fill="x")
-
-        ctk.CTkLabel(self.pos_frame, text="X:").grid(row=0, column=0, padx=5)
-        ctk.CTkEntry(self.pos_frame, textvariable=self.ui_x_var, width=60).grid(row=0, column=1, padx=5)
+        frame_pos = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        frame_pos.pack(padx=20, pady=5, fill="x")
+        ctk.CTkLabel(frame_pos, text="X:").grid(row=0, column=0, padx=5)
+        ctk.CTkEntry(frame_pos, textvariable=self.ui_x, width=60).grid(row=0, column=1, padx=5)
+        ctk.CTkLabel(frame_pos, text="Y:").grid(row=0, column=2, padx=5)
+        ctk.CTkEntry(frame_pos, textvariable=self.ui_y, width=60).grid(row=0, column=3, padx=5)
         
-        ctk.CTkLabel(self.pos_frame, text="Y:").grid(row=0, column=2, padx=5)
-        ctk.CTkEntry(self.pos_frame, textvariable=self.ui_y_var, width=60).grid(row=0, column=3, padx=5)
+        ctk.CTkButton(self.sidebar, text="Apply Position", command=self.apply_manual_pos, height=25).pack(padx=20, pady=5, fill="x")
 
-        ctk.CTkButton(self.sidebar, text="Apply Manual Pos", command=self.apply_manual_pos, height=25).pack(padx=20, pady=5, fill="x")
+        # View & Nav
+        self._add_header("VIEW & NAV")
+        
+        frame_nav = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        frame_nav.pack(pady=10)
 
-        # --- 4. View & Navigation (RESTORED) ---
-        ctk.CTkLabel(self.sidebar, text="VIEW & NAV", font=ctk.CTkFont(size=14, weight="bold")).pack(padx=20, pady=(20, 10), anchor="w")
-        
-        # Zoom
-        ctk.CTkLabel(self.sidebar, text="Zoom Level:").pack(padx=20, anchor="w")
-        self.slider_zoom = ctk.CTkSlider(self.sidebar, from_=0.5, to=3.0, command=self.on_zoom)
-        self.slider_zoom.set(1.0)
-        self.slider_zoom.pack(padx=20, pady=5, fill="x")
+        ctk.CTkButton(frame_nav, text="◄", width=30, command=self.prev_page).pack(side="left", padx=5)
+        self.lbl_page = ctk.CTkLabel(frame_nav, text="Page 1", width=70, anchor="center")
+        self.lbl_page.pack(side="left", padx=5)
+        ctk.CTkButton(frame_nav, text="►", width=30, command=self.next_page).pack(side="left", padx=5)
 
-        # Page Navigation
-        self.nav_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.nav_frame.pack(padx=20, pady=10, fill="x")
-        
-        self.btn_prev = ctk.CTkButton(self.nav_frame, text="◄", width=30, command=self.prev_page)
-        self.btn_prev.pack(side="left", padx=2)
-        
-        self.page_label = ctk.CTkLabel(self.nav_frame, text="Page 1", width=80)
-        self.page_label.pack(side="left", padx=5)
-        
-        self.btn_next = ctk.CTkButton(self.nav_frame, text="►", width=30, command=self.next_page)
-        self.btn_next.pack(side="left", padx=2)
+        self.lbl_info = ctk.CTkLabel(self.sidebar, text="", font=("Arial", 10), text_color="gray")
+        self.lbl_info.pack(side="bottom", pady=10)
 
-        # File Info
-        self.file_info_label = ctk.CTkLabel(self.sidebar, text="No file loaded", font=("Arial", 10), text_color="gray")
-        self.file_info_label.pack(side="bottom", pady=10)
+    def _add_header(self, text):
+        ctk.CTkLabel(self.sidebar, text=text, font=ctk.CTkFont(size=14, weight="bold")).pack(padx=20, pady=(20, 10), anchor="w")
 
     # --- LOGIC ---
 
-    def get_target_key(self):
-        return "bug" if "Bug" in self.target_selector.get() else "indicia"
+    def clear_all(self):
+        """Resets all overlays and clears the canvas."""
+        for key, data in self.overlays.items():
+            data["active"].set(False)
+            data["coords"] = None
+            data["page_index"] = None
+            if data["preview_id"]:
+                self.canvas.delete(data["preview_id"])
+                data["preview_id"] = None
+        
+        self.ui_x.set(0.0)
+        self.ui_y.set(0.0)
+        self.refresh_previews()
 
     def on_target_switch(self, value):
-        key = self.get_target_key()
-        target_data = self.overlays[key]
-        self.ui_size_var.set(target_data["size"].get())
-        if target_data["coords"]:
-            self.ui_x_var.set(round(target_data["coords"][0] / 72, 3))
-            self.ui_y_var.set(round(target_data["coords"][1] / 72, 3))
+        self.current_target_key = "bug" if "Bug" in value else "indicia"
+        data = self.overlays[self.current_target_key]
+        
+        self.ui_size.set(data["size"].get())
+        if data["coords"]:
+            self.ui_x.set(round(data["coords"][0] / 72, 3))
+            self.ui_y.set(round(data["coords"][1] / 72, 3))
         else:
-            self.ui_x_var.set(0)
-            self.ui_y_var.set(0)
+            self.ui_x.set(0); self.ui_y.set(0)
 
     def on_canvas_click(self, event):
-        if not self.tk_img: return 
-        canvas_x = self.canvas.canvasx(event.x)
-        canvas_y = self.canvas.canvasy(event.y)
+        if not self.pdf_doc: return
         
-        if not (self.offset_x <= canvas_x <= self.offset_x + self.tk_img.width()) or \
-           not (self.offset_y <= canvas_y <= self.offset_y + self.tk_img.height()):
+        cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+        
+        if not (self.offset_x <= cx <= self.offset_x + self.page_width_px) or \
+           not (self.offset_y <= cy <= self.offset_y + self.page_height_px):
             return
 
-        img_x = canvas_x - self.offset_x
-        img_y = canvas_y - self.offset_y
+        x_pt = (cx - self.offset_x) / self.display_scale
+        y_pt = (cy - self.offset_y) / self.display_scale
         
-        x_pt = img_x / self.display_scale
-        y_pt = img_y / self.display_scale
+        target = self.overlays[self.current_target_key]
+        target["active"].set(True)
+        target["coords"] = (x_pt, y_pt)
+        target["page_index"] = self.current_page_index
         
-        target_key = self.get_target_key()
-        
-        if not self.overlays[target_key]["active"].get():
-            self.overlays[target_key]["active"].set(True)
-        
-        self.overlays[target_key]["coords"] = (x_pt, y_pt)
-        self.ui_x_var.set(round(x_pt / 72, 3))
-        self.ui_y_var.set(round(y_pt / 72, 3))
+        self.ui_x.set(round(x_pt/72, 3))
+        self.ui_y.set(round(y_pt/72, 3))
         self.refresh_previews()
 
     def refresh_previews(self):
-        if not self.page_image: return
+        if not self.pdf_doc: return
 
         for key, data in self.overlays.items():
             if data["preview_id"]:
                 self.canvas.delete(data["preview_id"])
                 data["preview_id"] = None
-            
-            if data["active"].get() and data["coords"]:
+
+            if data["active"].get() and data["coords"] and data["page_index"] == self.current_page_index:
                 x_pt, y_pt = data["coords"]
                 
-                # Brightness check for Bug only
                 if key == "bug":
                     check_x = int(x_pt * self.display_scale)
                     check_y = int(y_pt * self.display_scale)
-                    try:
-                        check_x = max(0, min(check_x, self.page_image.width - 1))
-                        check_y = max(0, min(check_y, self.page_image.height - 1))
-                        brightness = get_brightness_from_image(self.page_image, check_x, check_y)
-                        data["pdf_asset"] = self.bug_white if brightness < 128 else self.bug_black
-                    except:
-                        pass
+                    check_x = max(0, min(check_x, self.page_image.width - 1))
+                    check_y = max(0, min(check_y, self.page_image.height - 1))
+                    b = get_brightness_at_loc(self.page_image, check_x, check_y)
+                    data["asset_key"] = "bug_white" if b < 128 else "bug_black"
 
-                try:
-                    tk_img = get_bug_image(data["pdf_asset"], data["size"].get(), self.display_scale)
-                    data["tk_ref"] = tk_img 
-                    display_x = x_pt * self.display_scale + self.offset_x
-                    display_y = y_pt * self.display_scale + self.offset_y
-                    data["preview_id"] = self.canvas.create_image(
-                        display_x, display_y, anchor="nw", image=tk_img
-                    )
-                except Exception as e:
-                    print(f"Error drawing {key}: {e}")
+                asset_doc = self.assets[data["asset_key"]]
+                tk_img = render_preview_image(asset_doc[0], data["size"].get(), self.display_scale)
+                data["tk_ref"] = tk_img 
+                
+                dx = x_pt * self.display_scale + self.offset_x
+                dy = y_pt * self.display_scale + self.offset_y
+                data["preview_id"] = self.canvas.create_image(dx, dy, anchor="nw", image=tk_img)
 
-    def on_ui_size_change(self, val):
-        target_key = self.get_target_key()
-        self.overlays[target_key]["size"].set(self.ui_size_var.get())
+    def on_ui_change(self, _):
+        self.overlays[self.current_target_key]["size"].set(self.ui_size.get())
         self.refresh_previews()
 
     def apply_manual_pos(self):
-        target_key = self.get_target_key()
         try:
-            x_pt = self.ui_x_var.get() * 72
-            y_pt = self.ui_y_var.get() * 72
-            self.overlays[target_key]["coords"] = (x_pt, y_pt)
-            self.overlays[target_key]["active"].set(True)
+            x_pt = self.ui_x.get() * 72
+            y_pt = self.ui_y.get() * 72
+            target = self.overlays[self.current_target_key]
+            target["coords"] = (x_pt, y_pt)
+            target["page_index"] = self.current_page_index
+            target["active"].set(True)
             self.refresh_previews()
-        except:
+        except ValueError:
             pass
 
     def open_pdf(self):
-        file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
-        if not file_path: return
-        self.pdf_path = file_path
-        self.pdf_doc = load_pdf(file_path)
-        self.current_page_index = 0
-        
-        # Display dimensions
-        page = self.pdf_doc[0]
-        w_in = page.rect.width / 72
-        h_in = page.rect.height / 72
-        self.file_info_label.configure(text=f"{os.path.basename(file_path)}\n{w_in:.2f} x {h_in:.2f} in")
-        
-        self.render_page()
+        f = filedialog.askopenfilename(filetypes=[("PDF", "*.pdf")])
+        if f:
+            self.pdf_path = f
+            self.pdf_doc = load_pdf(f)
+            self.current_page_index = 0
+            
+            # --- RESTORED DIMENSION INFO ---
+            page = self.pdf_doc[0]
+            w_in = page.rect.width / 72
+            h_in = page.rect.height / 72
+            
+            self.lbl_info.configure(text=f"{os.path.basename(f)}\n{w_in:.2f} x {h_in:.2f} in")
+            self.render_page()
 
     def render_page(self):
         self.canvas.delete("all")
@@ -289,56 +274,58 @@ class UnionBugInserter:
         if not self.pdf_doc: return
 
         page = self.pdf_doc[self.current_page_index]
-        base_pil, _, _, self.base_scale = get_page_image(page, self.canvas)
+        self.canvas.update_idletasks()
         
-        w, h = base_pil.size
+        pil_img, tk_img, scale = get_page_image(page, self.canvas.winfo_width(), self.canvas.winfo_height())
+        
+        w, h = pil_img.size
         new_w, new_h = int(w * self.zoom_level), int(h * self.zoom_level)
-        self.page_image = base_pil.resize((new_w, new_h), Image.LANCZOS)
-        
+        self.page_image = pil_img.resize((new_w, new_h), Image.LANCZOS)
         self.tk_img = ImageTk.PhotoImage(self.page_image)
-        self.display_scale = self.base_scale * self.zoom_level
+        self.display_scale = scale * self.zoom_level
+        self.page_width_px = new_w
+        self.page_height_px = new_h
 
-        cx = float(self.canvas.winfo_width()) / 2
-        cy = float(self.canvas.winfo_height()) / 2
+        cx = self.canvas.winfo_width() / 2
+        cy = self.canvas.winfo_height() / 2
+        img_id = self.canvas.create_image(cx, cy, anchor="center", image=self.tk_img)
         
-        self.img_id = self.canvas.create_image(cx, cy, anchor="center", image=self.tk_img)
-        self.canvas.config(scrollregion=self.canvas.bbox("all"))
-
-        bbox = self.canvas.bbox(self.img_id)
+        bbox = self.canvas.bbox(img_id)
         if bbox: self.offset_x, self.offset_y = bbox[0], bbox[1]
 
-        self.page_label.configure(text=f"Page {self.current_page_index+1} / {len(self.pdf_doc)}")
+        self.canvas.config(scrollregion=self.canvas.bbox("all"))
+        self.lbl_page.configure(text=f"Page {self.current_page_index + 1} / {len(self.pdf_doc)}")
+        
         self.refresh_previews()
 
-    # --- RESTORED NAVIGATION METHODS ---
     def prev_page(self):
         if self.current_page_index > 0:
             self.current_page_index -= 1
-            # Reset Overlays on page change (Optional: Remove lines below to keep position)
-            for d in self.overlays.values(): d["coords"] = None
             self.render_page()
 
     def next_page(self):
         if self.pdf_doc and self.current_page_index < len(self.pdf_doc) - 1:
             self.current_page_index += 1
-            # Reset Overlays on page change
-            for d in self.overlays.values(): d["coords"] = None
             self.render_page()
 
     def on_zoom(self, val):
         self.zoom_level = float(val)
         self.render_page()
-        
+
     def save_pdf(self):
         save_pdf_with_overlays(self)
-
+    
     def on_window_resize(self, event):
-        if hasattr(self, "_resize_after_id"): self.root.after_cancel(self._resize_after_id)
-        self._resize_after_id = self.root.after(300, self.render_page)
+        if hasattr(self, "_resize_job"): self.root.after_cancel(self._resize_job)
+        self._resize_job = self.root.after(300, self.render_page)
 
     def on_mouse_wheel(self, event):
-        direction = 1 if (hasattr(event, "delta") and event.delta > 0) or event.num == 4 else -1
-        new_zoom = max(0.5, min(3.0, self.zoom_level * (1 + 0.1 * direction)))
-        self.slider_zoom.set(new_zoom) # Sync slider
-        self.zoom_level = new_zoom
-        self.render_page()
+        # 1. Determine direction
+        if event.num == 5 or getattr(event, "delta", 0) < 0:
+            direction = -1 # Zoom Out
+        else:
+            direction = 1  # Zoom In
+
+        # 2. Update Zoom directly
+        new_zoom = max(0.5, min(3.0, self.zoom_level + (0.1 * direction)))
+        self.on_zoom(new_zoom)
