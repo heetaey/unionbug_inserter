@@ -128,8 +128,11 @@ class UnionBugInserter:
         frame_size = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         frame_size.pack(padx=20, pady=5, fill="x")
         
-        ctk.CTkSlider(frame_size, from_=0.1, to=2.0, variable=self.ui_size, 
+        # --- SIZE SLIDER UPDATED ---
+        # number_of_steps=190 ensures 0.01 increments (Range 1.9 / 0.01 = 190)
+        ctk.CTkSlider(frame_size, from_=0.1, to=2.0, number_of_steps=190, variable=self.ui_size, 
                       command=self.on_ui_change).pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
         entry_size = ctk.CTkEntry(frame_size, textvariable=self.ui_size, width=60)
         entry_size.pack(side="right")
         entry_size.bind("<Return>", lambda e: self.on_ui_change(None))
@@ -191,7 +194,6 @@ class UnionBugInserter:
     def on_canvas_click(self, event):
         if not self.pdf_doc: return
         
-        # 1. Get raw click coordinates (PDF Points)
         cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         
         if not (self.offset_x <= cx <= self.offset_x + self.page_width_px) or \
@@ -201,34 +203,26 @@ class UnionBugInserter:
         click_x_pt = (cx - self.offset_x) / self.display_scale
         click_y_pt = (cy - self.offset_y) / self.display_scale
         
-        # 2. Get the target data
         target = self.overlays[self.current_target_key]
         
-        # 3. Calculate Centering Offset
-        # We need to know the dimensions of the overlay to center it.
-        # Use default asset (bug_black or indicia) to calculate dimensions.
+        # Center Calculation
         asset_key = target["asset_key"]
-        if self.current_target_key == "bug": 
-            asset_key = "bug_black" # Use black as reference for size
-
+        if self.current_target_key == "bug": asset_key = "bug_black"
+        
         asset_doc = self.assets.get(asset_key)
         
         if asset_doc:
             page = asset_doc[0]
-            # Calculate width/height in points based on user selected inch size
             width_pt = target["size"].get() * 72
             aspect_ratio = page.rect.height / page.rect.width
             height_pt = width_pt * aspect_ratio
             
-            # Shift coordinate by half width/height
             final_x = click_x_pt - (width_pt / 2)
             final_y = click_y_pt - (height_pt / 2)
         else:
-            # Fallback (shouldn't happen if assets loaded)
             final_x = click_x_pt
             final_y = click_y_pt
         
-        # 4. Update State
         target["active"].set(True)
         target["coords"] = (final_x, final_y)
         target["page_index"] = self.current_page_index
@@ -264,8 +258,19 @@ class UnionBugInserter:
                 dy = y_pt * self.display_scale + self.offset_y
                 data["preview_id"] = self.canvas.create_image(dx, dy, anchor="nw", image=tk_img)
 
-    def on_ui_change(self, _):
-        self.overlays[self.current_target_key]["size"].set(self.ui_size.get())
+    def on_ui_change(self, value):
+        # --- CHANGED: Rounding Logic ---
+        # Get raw value either from slider arg or entry var
+        raw_val = float(value) if value is not None else self.ui_size.get()
+        
+        # Round to 2 decimal places
+        rounded = round(raw_val, 2)
+        
+        # Snap the UI variable to the rounded value (updates Entry text)
+        self.ui_size.set(rounded)
+        
+        # Update Data Model
+        self.overlays[self.current_target_key]["size"].set(rounded)
         self.refresh_previews()
 
     def apply_manual_pos(self):
@@ -287,12 +292,12 @@ class UnionBugInserter:
             self.pdf_doc = load_pdf(f)
             self.current_page_index = 0
             
-            # --- INFO DISPLAY ---
+            # Info Display
             page = self.pdf_doc[0]
             w_in = page.rect.width / 72
             h_in = page.rect.height / 72
-            
             self.lbl_info.configure(text=f"{os.path.basename(f)}\n{w_in:.2f} x {h_in:.2f} in")
+            
             self.render_page()
 
     def render_page(self):
@@ -348,12 +353,10 @@ class UnionBugInserter:
         self._resize_job = self.root.after(300, self.render_page)
 
     def on_mouse_wheel(self, event):
-        # 1. Determine direction
         if event.num == 5 or getattr(event, "delta", 0) < 0:
-            direction = -1 # Zoom Out
+            direction = -1 
         else:
-            direction = 1  # Zoom In
+            direction = 1
 
-        # 2. Update Zoom directly
         new_zoom = max(0.5, min(3.0, self.zoom_level + (0.1 * direction)))
         self.on_zoom(new_zoom)
