@@ -19,7 +19,7 @@ class UnionBugInserter:
     def __init__(self, root):
         self.root = root
         self.root.title("Union Bug & Indicia Placer")
-        self.root.geometry("1100x800")
+        self.root.geometry("1200x850") # Slightly wider for grid controls
 
         self.root.grid_columnconfigure(0, weight=1)
         self.root.grid_columnconfigure(1, weight=0)
@@ -59,6 +59,7 @@ class UnionBugInserter:
             }
         }
         
+        self.show_grid = tk.BooleanVar(value=False) # New Grid Toggle
         self.current_target_key = "bug"
         self.pdf_doc = None
         self.pdf_path = None
@@ -70,6 +71,10 @@ class UnionBugInserter:
         self.page_image = None
         self.page_width_px = 0
         self.page_height_px = 0
+        
+        # Dimensions for centering math
+        self.current_pdf_page_width_pt = 0 
+        self.current_pdf_page_height_pt = 0
 
         self.ui_size = tk.DoubleVar(value=0.3)
         self.ui_x = tk.DoubleVar(value=0.0)
@@ -108,7 +113,7 @@ class UnionBugInserter:
         self._add_header("ACTIONS")
         ctk.CTkButton(self.sidebar, text="Open PDF", command=self.open_pdf).pack(padx=20, pady=5, fill="x")
         ctk.CTkButton(self.sidebar, text="Save PDF", command=self.save_pdf, fg_color="green").pack(padx=20, pady=5, fill="x")
-        ctk.CTkButton(self.sidebar, text="Clean PDF / Reset", command=self.clear_all, fg_color="red").pack(padx=20, pady=5, fill="x")
+        ctk.CTkButton(self.sidebar, text="Clean / Reset", command=self.clear_all, fg_color="red").pack(padx=20, pady=5, fill="x")
         
         # Toggles
         self._add_header("ENABLE ELEMENTS")
@@ -128,8 +133,6 @@ class UnionBugInserter:
         frame_size = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         frame_size.pack(padx=20, pady=5, fill="x")
         
-        # --- SIZE SLIDER UPDATED ---
-        # number_of_steps=190 ensures 0.01 increments (Range 1.9 / 0.01 = 190)
         ctk.CTkSlider(frame_size, from_=0.1, to=2.0, number_of_steps=190, variable=self.ui_size, 
                       command=self.on_ui_change).pack(side="left", fill="x", expand=True, padx=(0, 10))
         
@@ -146,6 +149,16 @@ class UnionBugInserter:
         ctk.CTkEntry(frame_pos, textvariable=self.ui_y, width=60).grid(row=0, column=3, padx=5)
         
         ctk.CTkButton(self.sidebar, text="Apply Position", command=self.apply_manual_pos, height=25).pack(padx=20, pady=5, fill="x")
+        
+        # --- NEW FEATURES ---
+        self._add_header("ALIGNMENT & GRID")
+        
+        # Center Bug Button
+        ctk.CTkButton(self.sidebar, text="Center Bug Horizontally", command=self.center_bug_horizontally, 
+                     fg_color="#444", hover_color="#555").pack(padx=20, pady=5, fill="x")
+
+        # Grid Toggle
+        ctk.CTkSwitch(self.sidebar, text="Show Grid (0.5\")", variable=self.show_grid, command=self.render_page).pack(padx=20, pady=10, anchor="w")
 
         # View & Nav
         self._add_header("VIEW & NAV")
@@ -167,7 +180,6 @@ class UnionBugInserter:
     # --- LOGIC ---
 
     def clear_all(self):
-        """Resets all overlays and clears the canvas."""
         for key, data in self.overlays.items():
             data["active"].set(False)
             data["coords"] = None
@@ -178,6 +190,43 @@ class UnionBugInserter:
         
         self.ui_x.set(0.0)
         self.ui_y.set(0.0)
+        self.refresh_previews()
+
+    def center_bug_horizontally(self):
+        """Specifically centers ONLY the Union Bug horizontally."""
+        if not self.pdf_doc: return
+
+        # Force switch to bug control so the UI reflects the change
+        self.target_selector.set("Union Bug")
+        self.on_target_switch("Union Bug")
+
+        data = self.overlays["bug"]
+        
+        # Get dimensions
+        asset_doc = self.assets[data["asset_key"]]
+        if not asset_doc: return
+        page = asset_doc[0]
+        
+        # Calculate Bug Width in PDF Points
+        # size.get() is in inches. 72 pts per inch.
+        width_pt = data["size"].get() * 72
+        
+        # Page Width
+        page_width_pt = self.current_pdf_page_width_pt
+        
+        # Center Calculation: (PageW - BugW) / 2
+        new_x = (page_width_pt - width_pt) / 2
+        
+        # Keep Y if it exists, else 0
+        current_y = data["coords"][1] if data["coords"] else 0
+        
+        # Apply
+        data["coords"] = (new_x, current_y)
+        data["active"].set(True)
+        data["page_index"] = self.current_page_index
+        
+        self.ui_x.set(round(new_x / 72, 3))
+        self.ui_y.set(round(current_y / 72, 3))
         self.refresh_previews()
 
     def on_target_switch(self, value):
@@ -205,8 +254,9 @@ class UnionBugInserter:
         
         target = self.overlays[self.current_target_key]
         
-        # Center Calculation
+        # Center Calculation on Click
         asset_key = target["asset_key"]
+        # Force default black for calculation
         if self.current_target_key == "bug": asset_key = "bug_black"
         
         asset_doc = self.assets.get(asset_key)
@@ -231,6 +281,30 @@ class UnionBugInserter:
         self.ui_y.set(round(final_y/72, 3))
         self.refresh_previews()
 
+    def draw_grid(self):
+        """Draws a 0.5 inch grid over the page image."""
+        if not self.show_grid.get(): return
+        
+        # Grid spacing in PDF Points (0.5 inch * 72)
+        step_pt = 36 
+        
+        # Convert to screen pixels
+        step_px = step_pt * self.display_scale
+        
+        # Draw Vertical Lines
+        curr_x = self.offset_x
+        while curr_x <= self.offset_x + self.page_width_px:
+            self.canvas.create_line(curr_x, self.offset_y, curr_x, self.offset_y + self.page_height_px, 
+                                    fill="#555555", width=1, dash=(2, 4), tags="grid_line")
+            curr_x += step_px
+            
+        # Draw Horizontal Lines
+        curr_y = self.offset_y
+        while curr_y <= self.offset_y + self.page_height_px:
+            self.canvas.create_line(self.offset_x, curr_y, self.offset_x + self.page_width_px, curr_y, 
+                                    fill="#555555", width=1, dash=(2, 4), tags="grid_line")
+            curr_y += step_px
+
     def refresh_previews(self):
         if not self.pdf_doc: return
 
@@ -242,6 +316,7 @@ class UnionBugInserter:
             if data["active"].get() and data["coords"] and data["page_index"] == self.current_page_index:
                 x_pt, y_pt = data["coords"]
                 
+                # Check brightness for automatic color switching
                 if key == "bug":
                     check_x = int(x_pt * self.display_scale)
                     check_y = int(y_pt * self.display_scale)
@@ -256,20 +331,14 @@ class UnionBugInserter:
                 
                 dx = x_pt * self.display_scale + self.offset_x
                 dy = y_pt * self.display_scale + self.offset_y
+                
+                # Draw image
                 data["preview_id"] = self.canvas.create_image(dx, dy, anchor="nw", image=tk_img)
 
     def on_ui_change(self, value):
-        # --- CHANGED: Rounding Logic ---
-        # Get raw value either from slider arg or entry var
         raw_val = float(value) if value is not None else self.ui_size.get()
-        
-        # Round to 2 decimal places
         rounded = round(raw_val, 2)
-        
-        # Snap the UI variable to the rounded value (updates Entry text)
         self.ui_size.set(rounded)
-        
-        # Update Data Model
         self.overlays[self.current_target_key]["size"].set(rounded)
         self.refresh_previews()
 
@@ -296,8 +365,8 @@ class UnionBugInserter:
             page = self.pdf_doc[0]
             w_in = page.rect.width / 72
             h_in = page.rect.height / 72
-            self.lbl_info.configure(text=f"{os.path.basename(f)}\n{w_in:.2f} x {h_in:.2f} in")
             
+            self.lbl_info.configure(text=f"{os.path.basename(f)}\n{w_in:.2f} x {h_in:.2f} in")
             self.render_page()
 
     def render_page(self):
@@ -307,6 +376,9 @@ class UnionBugInserter:
         if not self.pdf_doc: return
 
         page = self.pdf_doc[self.current_page_index]
+        self.current_pdf_page_width_pt = page.rect.width # Store for centering math
+        self.current_pdf_page_height_pt = page.rect.height
+
         self.canvas.update_idletasks()
         
         pil_img, tk_img, scale = get_page_image(page, self.canvas.winfo_width(), self.canvas.winfo_height())
@@ -329,6 +401,9 @@ class UnionBugInserter:
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
         self.lbl_page.configure(text=f"Page {self.current_page_index + 1} / {len(self.pdf_doc)}")
         
+        # --- Draw Grid (Before Overlays) ---
+        self.draw_grid()
+
         self.refresh_previews()
 
     def prev_page(self):

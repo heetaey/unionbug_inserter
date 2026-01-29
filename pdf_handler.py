@@ -60,7 +60,7 @@ def save_pdf_with_overlays(app):
 
     original_name = os.path.splitext(os.path.basename(app.pdf_path))[0]
     save_path = filedialog.asksaveasfilename(
-        initialfile=f"{original_name}_processed.pdf",
+        initialfile=f"{original_name} - Proof.pdf",
         defaultextension=".pdf",
         filetypes=[("PDF files", "*.pdf")]
     )
