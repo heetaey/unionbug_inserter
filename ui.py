@@ -1,9 +1,10 @@
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image, ImageTk
 import fitz
 import os
+from tkinterdnd2 import DND_FILES  # Import DnD constants
 
 # Import our optimized handler
 from pdf_handler import (
@@ -19,11 +20,16 @@ class UnionBugInserter:
     def __init__(self, root):
         self.root = root
         self.root.title("Union Bug & Indicia Placer")
-        self.root.geometry("1200x850") # Slightly wider for grid controls
+        self.root.geometry("1200x850")
 
         self.root.grid_columnconfigure(0, weight=1)
         self.root.grid_columnconfigure(1, weight=0)
         self.root.grid_rowconfigure(0, weight=1)
+
+        # --- DRAG & DROP SETUP ---
+        # Tell the window to accept file drops
+        self.root.drop_target_register(DND_FILES)
+        self.root.dnd_bind('<<Drop>>', self.on_drop_file)
 
         # --- ASSET LOADING ---
         bug_blk_path, bug_wht_path = get_bug_paths()
@@ -59,7 +65,7 @@ class UnionBugInserter:
             }
         }
         
-        self.show_grid = tk.BooleanVar(value=False) # New Grid Toggle
+        self.show_grid = tk.BooleanVar(value=False)
         self.current_target_key = "bug"
         self.pdf_doc = None
         self.pdf_path = None
@@ -72,7 +78,6 @@ class UnionBugInserter:
         self.page_width_px = 0
         self.page_height_px = 0
         
-        # Dimensions for centering math
         self.current_pdf_page_width_pt = 0 
         self.current_pdf_page_height_pt = 0
 
@@ -111,7 +116,7 @@ class UnionBugInserter:
         
         # Actions
         self._add_header("ACTIONS")
-        ctk.CTkButton(self.sidebar, text="Open PDF", command=self.open_pdf).pack(padx=20, pady=5, fill="x")
+        ctk.CTkButton(self.sidebar, text="Open PDF", command=lambda: self.open_pdf(None)).pack(padx=20, pady=5, fill="x")
         ctk.CTkButton(self.sidebar, text="Save PDF", command=self.save_pdf, fg_color="green").pack(padx=20, pady=5, fill="x")
         ctk.CTkButton(self.sidebar, text="Clean / Reset", command=self.clear_all, fg_color="red").pack(padx=20, pady=5, fill="x")
         
@@ -150,19 +155,12 @@ class UnionBugInserter:
         
         ctk.CTkButton(self.sidebar, text="Apply Position", command=self.apply_manual_pos, height=25).pack(padx=20, pady=5, fill="x")
         
-        # --- NEW FEATURES ---
         self._add_header("ALIGNMENT & GRID")
-        
-        # Center Bug Button
         ctk.CTkButton(self.sidebar, text="Center Bug Horizontally", command=self.center_bug_horizontally, 
                      fg_color="#444", hover_color="#555").pack(padx=20, pady=5, fill="x")
-
-        # Grid Toggle
         ctk.CTkSwitch(self.sidebar, text="Show Grid (0.5\")", variable=self.show_grid, command=self.render_page).pack(padx=20, pady=10, anchor="w")
 
-        # View & Nav
         self._add_header("VIEW & NAV")
-        
         frame_nav = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         frame_nav.pack(pady=10)
 
@@ -177,7 +175,53 @@ class UnionBugInserter:
     def _add_header(self, text):
         ctk.CTkLabel(self.sidebar, text=text, font=ctk.CTkFont(size=14, weight="bold")).pack(padx=20, pady=(20, 10), anchor="w")
 
-    # --- LOGIC ---
+    # --- DRAG & DROP LOGIC ---
+
+    def on_drop_file(self, event):
+        """Handles the file drop event."""
+        file_path = event.data
+        
+        # Windows D&D paths are often wrapped in curly braces if they contain spaces
+        if file_path.startswith('{') and file_path.endswith('}'):
+            file_path = file_path[1:-1]
+            
+        # If multiple files are dropped, we only take the first one
+        if " " in file_path and not os.path.exists(file_path):
+             # Try splitting (simple logic for now)
+             parts = self.root.tk.splitlist(event.data)
+             if parts:
+                 file_path = parts[0]
+
+        if os.path.isfile(file_path):
+            if file_path.lower().endswith('.pdf'):
+                self.open_pdf(file_path)
+            else:
+                messagebox.showerror("Error", "Please drop a PDF file.")
+
+    # --- MAIN LOGIC ---
+
+    def open_pdf(self, path=None):
+        """Modified to accept an optional path argument."""
+        if path:
+            f = path
+        else:
+            f = filedialog.askopenfilename(filetypes=[("PDF", "*.pdf")])
+        
+        if f:
+            self.pdf_path = f
+            try:
+                self.pdf_doc = load_pdf(f)
+                self.current_page_index = 0
+                
+                # Info Display
+                page = self.pdf_doc[0]
+                w_in = page.rect.width / 72
+                h_in = page.rect.height / 72
+                
+                self.lbl_info.configure(text=f"{os.path.basename(f)}\n{w_in:.2f} x {h_in:.2f} in")
+                self.render_page()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load PDF: {e}")
 
     def clear_all(self):
         for key, data in self.overlays.items():
@@ -193,34 +237,22 @@ class UnionBugInserter:
         self.refresh_previews()
 
     def center_bug_horizontally(self):
-        """Specifically centers ONLY the Union Bug horizontally."""
         if not self.pdf_doc: return
 
-        # Force switch to bug control so the UI reflects the change
         self.target_selector.set("Union Bug")
         self.on_target_switch("Union Bug")
 
         data = self.overlays["bug"]
-        
-        # Get dimensions
         asset_doc = self.assets[data["asset_key"]]
         if not asset_doc: return
         page = asset_doc[0]
         
-        # Calculate Bug Width in PDF Points
-        # size.get() is in inches. 72 pts per inch.
         width_pt = data["size"].get() * 72
-        
-        # Page Width
         page_width_pt = self.current_pdf_page_width_pt
         
-        # Center Calculation: (PageW - BugW) / 2
         new_x = (page_width_pt - width_pt) / 2
-        
-        # Keep Y if it exists, else 0
         current_y = data["coords"][1] if data["coords"] else 0
         
-        # Apply
         data["coords"] = (new_x, current_y)
         data["active"].set(True)
         data["page_index"] = self.current_page_index
@@ -254,9 +286,7 @@ class UnionBugInserter:
         
         target = self.overlays[self.current_target_key]
         
-        # Center Calculation on Click
         asset_key = target["asset_key"]
-        # Force default black for calculation
         if self.current_target_key == "bug": asset_key = "bug_black"
         
         asset_doc = self.assets.get(asset_key)
@@ -282,23 +312,16 @@ class UnionBugInserter:
         self.refresh_previews()
 
     def draw_grid(self):
-        """Draws a 0.5 inch grid over the page image."""
         if not self.show_grid.get(): return
-        
-        # Grid spacing in PDF Points (0.5 inch * 72)
-        step_pt = 36 
-        
-        # Convert to screen pixels
+        step_pt = 36 # 0.5 inch
         step_px = step_pt * self.display_scale
         
-        # Draw Vertical Lines
         curr_x = self.offset_x
         while curr_x <= self.offset_x + self.page_width_px:
             self.canvas.create_line(curr_x, self.offset_y, curr_x, self.offset_y + self.page_height_px, 
                                     fill="#555555", width=1, dash=(2, 4), tags="grid_line")
             curr_x += step_px
             
-        # Draw Horizontal Lines
         curr_y = self.offset_y
         while curr_y <= self.offset_y + self.page_height_px:
             self.canvas.create_line(self.offset_x, curr_y, self.offset_x + self.page_width_px, curr_y, 
@@ -316,7 +339,6 @@ class UnionBugInserter:
             if data["active"].get() and data["coords"] and data["page_index"] == self.current_page_index:
                 x_pt, y_pt = data["coords"]
                 
-                # Check brightness for automatic color switching
                 if key == "bug":
                     check_x = int(x_pt * self.display_scale)
                     check_y = int(y_pt * self.display_scale)
@@ -331,8 +353,6 @@ class UnionBugInserter:
                 
                 dx = x_pt * self.display_scale + self.offset_x
                 dy = y_pt * self.display_scale + self.offset_y
-                
-                # Draw image
                 data["preview_id"] = self.canvas.create_image(dx, dy, anchor="nw", image=tk_img)
 
     def on_ui_change(self, value):
@@ -354,21 +374,6 @@ class UnionBugInserter:
         except ValueError:
             pass
 
-    def open_pdf(self):
-        f = filedialog.askopenfilename(filetypes=[("PDF", "*.pdf")])
-        if f:
-            self.pdf_path = f
-            self.pdf_doc = load_pdf(f)
-            self.current_page_index = 0
-            
-            # Info Display
-            page = self.pdf_doc[0]
-            w_in = page.rect.width / 72
-            h_in = page.rect.height / 72
-            
-            self.lbl_info.configure(text=f"{os.path.basename(f)}\n{w_in:.2f} x {h_in:.2f} in")
-            self.render_page()
-
     def render_page(self):
         self.canvas.delete("all")
         for d in self.overlays.values(): d["preview_id"] = None
@@ -376,7 +381,7 @@ class UnionBugInserter:
         if not self.pdf_doc: return
 
         page = self.pdf_doc[self.current_page_index]
-        self.current_pdf_page_width_pt = page.rect.width # Store for centering math
+        self.current_pdf_page_width_pt = page.rect.width 
         self.current_pdf_page_height_pt = page.rect.height
 
         self.canvas.update_idletasks()
@@ -401,9 +406,7 @@ class UnionBugInserter:
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
         self.lbl_page.configure(text=f"Page {self.current_page_index + 1} / {len(self.pdf_doc)}")
         
-        # --- Draw Grid (Before Overlays) ---
         self.draw_grid()
-
         self.refresh_previews()
 
     def prev_page(self):
