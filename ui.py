@@ -158,7 +158,7 @@ class UnionBugInserter:
         self._add_header("ALIGNMENT & GRID")
         ctk.CTkButton(self.sidebar, text="Center Bug Horizontally", command=self.center_bug_horizontally, 
                      fg_color="#444", hover_color="#555").pack(padx=20, pady=5, fill="x")
-        ctk.CTkSwitch(self.sidebar, text="Show Grid (0.5\")", variable=self.show_grid, command=self.render_page).pack(padx=20, pady=10, anchor="w")
+        ctk.CTkSwitch(self.sidebar, text="Show Grid (0.25\")", variable=self.show_grid, command=self.render_page).pack(padx=20, pady=10, anchor="w")
 
         self._add_header("VIEW & NAV")
         frame_nav = ctk.CTkFrame(self.sidebar, fg_color="transparent")
@@ -313,7 +313,7 @@ class UnionBugInserter:
 
     def draw_grid(self):
         if not self.show_grid.get(): return
-        step_pt = 36 # 0.5 inch
+        step_pt = 18 # 0.25 inch
         step_px = step_pt * self.display_scale
         
         curr_x = self.offset_x
