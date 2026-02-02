@@ -2,8 +2,6 @@ import fitz
 from PIL import Image, ImageTk
 from tkinter import filedialog, messagebox
 import os
-import sys
-import subprocess
 
 def load_pdf(file_path):
     """Safely loads a PDF."""
@@ -15,8 +13,10 @@ def load_pdf(file_path):
 
 def get_page_image(page, canvas_width, canvas_height):
     """Renders a PDF page to a PIL image that fits within the canvas dimensions."""
-    # Logic to calculate scale to fit window
     margin = 50
+    if page.rect.width == 0 or page.rect.height == 0:
+        return None, None, 1.0
+
     scale = min((canvas_width - margin) / page.rect.width, (canvas_height - margin) / page.rect.height, 2.0)
     
     mat = fitz.Matrix(scale, scale)
@@ -26,81 +26,104 @@ def get_page_image(page, canvas_width, canvas_height):
     return img, ImageTk.PhotoImage(img), scale
 
 def render_preview_image(overlay_page, target_width_inch, display_scale):
-    """
-    Renders the overlay (Bug/Indicia) for the UI preview.
-    Uses the in-memory 'overlay_page' object, not a file path.
-    """
-    # Calculate how many pixels wide the overlay should be on screen
+    """Renders the overlay (Bug/Indicia) for the UI preview."""
     target_width_px = int(target_width_inch * 72 * display_scale)
+    aspect = overlay_page.rect.height / overlay_page.rect.width
+    target_height_px = int(target_width_px * aspect)
     
-    scale_factor = target_width_px / overlay_page.rect.width
-    mat = fitz.Matrix(scale_factor, scale_factor)
-    
+    mat = fitz.Matrix(target_width_px / overlay_page.rect.width, target_height_px / overlay_page.rect.height)
     pix = overlay_page.get_pixmap(matrix=mat, alpha=True)
     img = Image.frombytes("RGBA", [pix.width, pix.height], pix.samples)
+    
     return ImageTk.PhotoImage(img)
 
-def get_brightness_at_loc(image, x, y):
-    """Checks pixel brightness to decide if we need a white or black bug."""
+def get_brightness_at_loc(pil_img, x, y):
+    """Checks pixel brightness to decide black vs white bug."""
     try:
-        r, g, b = image.getpixel((x, y))
-        return int(0.299 * r + 0.587 * g + 0.114 * b)
+        r, g, b = pil_img.getpixel((x, y))
+        return (0.299 * r + 0.587 * g + 0.114 * b)
     except Exception:
-        return 128 # Default to mid-grey if out of bounds
+        return 255
 
 def save_pdf_with_overlays(app):
-    """Saves the final PDF with overlays applied to specific pages."""
-    
-    # Filter for valid items
-    active_items = [v for v in app.overlays.values() if v["active"].get() and v["coords"] and v["page_index"] is not None]
+    """
+    Saves the PDF by copying pages to a NEW document structure.
+    This fixes 'xref' and corruption errors by discarding the old container.
+    """
+    if not app.pdf_doc: return
+
+    # 1. Collect Active Items
+    active_items = []
+    for key, data in app.overlays.items():
+        if data["active"].get() and data["coords"] is not None:
+            active_items.append({
+                "page_index": data["page_index"],
+                "coords": data["coords"],
+                "size": data["size"],
+                "asset_key": data["asset_key"]
+            })
 
     if not active_items:
-        messagebox.showwarning("No Overlays", "No elements are active and placed.")
+        messagebox.showinfo("Info", "No active overlays to save.")
         return
 
+    # 2. Get Save Path
     original_name = os.path.splitext(os.path.basename(app.pdf_path))[0]
     save_path = filedialog.asksaveasfilename(
-        initialfile=f"{original_name} - Proof.pdf",
+        title="Save PDF As",
+        initialfile=f"{original_name}_processed.pdf",
         defaultextension=".pdf",
         filetypes=[("PDF files", "*.pdf")]
     )
     if not save_path: return
 
     try:
-        doc = fitz.open(app.pdf_path)
-
+        # 3. OPEN SOURCE & CREATE NEW DOC
+        # We open a fresh handle to the source
+        src_doc = fitz.open(app.pdf_path)
+        
+        # We create a brand new, empty PDF
+        out_doc = fitz.open()
+        
+        # 4. COPY PAGES (Sanitizes the PDF structure)
+        out_doc.insert_pdf(src_doc)
+        
+        # 5. APPLY OVERLAYS to the NEW document
         for item in active_items:
-            # 1. Get the correct page
             try:
-                page = doc[item["page_index"]]
+                # Target page in the NEW document
+                page = out_doc[item["page_index"]]
             except IndexError:
                 continue
 
-            # 2. Get the asset page (from app memory)
-            # app.assets stores the fitz.Document, we need the first page
             asset_doc = app.assets[item["asset_key"]] 
             overlay_page = asset_doc[0]
 
-            # 3. Calculate Scale
             x_pt, y_pt = item["coords"]
             width_pt = item["size"].get() * 72
             scale = width_pt / overlay_page.rect.width
 
-            # 4. Place it
             rect = fitz.Rect(
                 x_pt, 
                 y_pt, 
                 x_pt + overlay_page.rect.width * scale, 
                 y_pt + overlay_page.rect.height * scale
             )
+            
+            # Apply the overlay
             page.show_pdf_page(rect, asset_doc, 0)
 
-        doc.save(save_path)
+        # 6. SAVE
+        # garbage=4: removes unused objects
+        # deflate=True: compresses streams to save space
+        out_doc.save(save_path, garbage=4, deflate=True)
+        
+        # Cleanup
+        out_doc.close()
+        src_doc.close()
+        
         messagebox.showinfo("Success", "PDF Saved Successfully.")
         
-        # Open File
-        if sys.platform == "darwin": subprocess.call(["open", "-R", save_path])
-        elif sys.platform == "win32": os.startfile(os.path.normpath(save_path))
-
     except Exception as e:
         messagebox.showerror("Error", f"Failed to save PDF: {e}")
+        print(f"Detailed Error: {e}")
