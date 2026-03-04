@@ -17,4 +17,11 @@ if __name__ == "__main__":
     root.geometry("1200x850")
     
     app = UnionBugInserter(root)
+    
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except ImportError:
+        pass
+    
     root.mainloop()

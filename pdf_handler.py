@@ -1,10 +1,10 @@
-import fitz
 from PIL import Image, ImageTk
 from tkinter import filedialog, messagebox
 import os
 
 def load_pdf(file_path):
     """Safely loads a PDF."""
+    import fitz
     try:
         return fitz.open(file_path)
     except Exception as e:
@@ -13,28 +13,30 @@ def load_pdf(file_path):
 
 def get_page_image(page, canvas_width, canvas_height):
     """Renders a PDF page to a PIL image that fits within the canvas dimensions."""
+    import fitz
     margin = 50
     if page.rect.width == 0 or page.rect.height == 0:
         return None, None, 1.0
 
     scale = min((canvas_width - margin) / page.rect.width, (canvas_height - margin) / page.rect.height, 2.0)
-    
+
     mat = fitz.Matrix(scale, scale)
     pix = page.get_pixmap(matrix=mat, alpha=False)
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    
+
     return img, ImageTk.PhotoImage(img), scale
 
 def render_preview_image(overlay_page, target_width_inch, display_scale):
     """Renders the overlay (Bug/Indicia) for the UI preview."""
+    import fitz
     target_width_px = int(target_width_inch * 72 * display_scale)
     aspect = overlay_page.rect.height / overlay_page.rect.width
     target_height_px = int(target_width_px * aspect)
-    
+
     mat = fitz.Matrix(target_width_px / overlay_page.rect.width, target_height_px / overlay_page.rect.height)
     pix = overlay_page.get_pixmap(matrix=mat, alpha=True)
     img = Image.frombytes("RGBA", [pix.width, pix.height], pix.samples)
-    
+
     return ImageTk.PhotoImage(img)
 
 def get_brightness_at_loc(pil_img, x, y):
@@ -78,6 +80,7 @@ def save_pdf_with_overlays(app):
     if not save_path: return
 
     try:
+        import fitz
         # 3. OPEN SOURCE & CREATE NEW DOC
         # We open a fresh handle to the source
         src_doc = fitz.open(app.pdf_path)
